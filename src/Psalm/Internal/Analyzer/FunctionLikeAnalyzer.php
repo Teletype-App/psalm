@@ -857,7 +857,8 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             }
         }
 
-        if ($codebase->alter_code
+        if ($missingThrowsDocblockErrors !== []
+            && $codebase->alter_code
             && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
             && !$this->function instanceof VirtualNode
         ) {

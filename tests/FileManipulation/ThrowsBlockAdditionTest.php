@@ -98,6 +98,28 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'preserveUnrelatedEmptyDocblock' => [
+                'input' => '<?php
+                    /** */
+                    function foo(): void {}
+
+                    function bar(): void {
+                        throw new \RuntimeException();
+                    }',
+                'output' => '<?php
+                    /** */
+                    function foo(): void {}
+
+                    /**
+                     * @throws RuntimeException
+                     */
+                    function bar(): void {
+                        throw new \RuntimeException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'preservesExistingThrowsAnnotationToFunction' => [
                 'input' => '<?php
                     /**
