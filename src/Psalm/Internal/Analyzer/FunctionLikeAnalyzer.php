@@ -32,6 +32,7 @@ use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
+use Psalm\Internal\Type\TypeCombiner;
 use Psalm\Internal\Type\TypeExpander;
 use Psalm\Issue\ImpureFunctionCall;
 use Psalm\Issue\InvalidDocblockParamName;
@@ -807,7 +808,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             }
         }
 
-        $missingThrowsDocblockErrors = [];
+        $missingThrowsDocblockExceptions = [];
         foreach ($statements_analyzer->getUncaughtThrows($context) as $possibly_thrown_exception => $codelocations) {
             $is_expected = false;
 
@@ -827,13 +828,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             }
 
             if (!$is_expected) {
-                $missing_docblock_exception = new TNamedObject($possibly_thrown_exception);
-                $missingThrowsDocblockErrors[] = $missing_docblock_exception->toNamespacedString(
-                    $this->source->getNamespace(),
-                    $this->source->getAliasedClassesFlipped(),
-                    $this->source->getFQCLN(),
-                    true,
-                );
+                $missingThrowsDocblockExceptions[] = new TNamedObject($possibly_thrown_exception);
 
                 foreach ($codelocations as $codelocation) {
                     // issues are suppressed in ThrowAnalyzer, CallAnalyzer, etc.
@@ -846,6 +841,19 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                         ),
                     );
                 }
+            }
+        }
+
+        $missingThrowsDocblockErrors = [];
+        if ($missingThrowsDocblockExceptions) {
+            $combined_exceptions = TypeCombiner::combine($missingThrowsDocblockExceptions, $codebase);
+            foreach ($combined_exceptions->getAtomicTypes() as $exception) {
+                $missingThrowsDocblockErrors[] = $exception->toNamespacedString(
+                    $this->source->getNamespace(),
+                    $this->source->getAliasedClassesFlipped(),
+                    $this->source->getFQCLN(),
+                    true,
+                );
             }
         }
 
