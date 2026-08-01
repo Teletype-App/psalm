@@ -786,6 +786,7 @@ final class PreloaderList {
         \Psalm\Internal\FileManipulation\FileManipulationBuffer::class,
         \Psalm\Internal\FileManipulation\FunctionDocblockManipulator::class,
         \Psalm\Internal\FileManipulation\PropertyDocblockManipulator::class,
+        \Psalm\Internal\FileManipulation\ThrowsDocblockImportResolver::class,
         \Psalm\Internal\Fork\AnalyzerTask::class,
         \Psalm\Internal\Fork\ForkContext::class,
         \Psalm\Internal\Fork\IgbinarySerializer::class,

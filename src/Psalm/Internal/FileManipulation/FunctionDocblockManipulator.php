@@ -20,10 +20,12 @@ use Psalm\Storage\Mutations;
 use function array_key_exists;
 use function array_reduce;
 use function array_slice;
+use function array_values;
 use function count;
 use function implode;
 use function is_string;
 use function ltrim;
+use function natcasesort;
 use function preg_match;
 use function reset;
 use function str_replace;
@@ -31,6 +33,7 @@ use function str_split;
 use function strlen;
 use function strpos;
 use function strrpos;
+use function strtolower;
 use function substr;
 
 /**
@@ -90,6 +93,17 @@ final class FunctionDocblockManipulator
     /** @var list<string> */
     private array $throwsExceptions = [];
 
+    /** @var list<string> */
+    private array $throwsImports = [];
+
+    private ?string $throwsImportGroupKey = null;
+
+    private ?int $throwsImportPosition = null;
+
+    private string $throwsImportIndentation = '';
+
+    private bool $throwsImportAfterUse = false;
+
     /**
      * @param  Closure|Function_|ClassMethod|ArrowFunction $stmt
      */
@@ -110,7 +124,7 @@ final class FunctionDocblockManipulator
     }
 
     private function __construct(
-        string $file_path,
+        private readonly string $file_path,
         private readonly Closure|Function_|ClassMethod|ArrowFunction $stmt,
         ProjectAnalyzer $project_analyzer,
     ) {
@@ -487,7 +501,61 @@ final class FunctionDocblockManipulator
 
         $file_manipulations = [];
 
+        /**
+         * @var array<string, array{
+         *     position: int,
+         *     indentation: string,
+         *     after_use: bool,
+         *     imports: array<lowercase-string, string>,
+         *     conflicting_aliases: array<lowercase-string, true>
+         * }>
+         */
+        $throws_import_groups = [];
+
         foreach (self::$manipulators[$file_path] as $manipulator) {
+            if ($manipulator->throwsImports !== []
+                && $manipulator->throwsImportGroupKey !== null
+                && $manipulator->throwsImportPosition !== null
+            ) {
+                $group_key = $manipulator->throwsImportGroupKey;
+                $throws_import_groups[$group_key] ??= [
+                    'position' => $manipulator->throwsImportPosition,
+                    'indentation' => $manipulator->throwsImportIndentation,
+                    'after_use' => $manipulator->throwsImportAfterUse,
+                    'imports' => [],
+                    'conflicting_aliases' => [],
+                ];
+
+                foreach ($manipulator->throwsImports as $import) {
+                    $alias = strtolower(self::getClassShortName($import));
+                    $existing_import = $throws_import_groups[$group_key]['imports'][$alias] ?? null;
+
+                    if ($existing_import !== null && strtolower($existing_import) !== strtolower($import)) {
+                        $throws_import_groups[$group_key]['conflicting_aliases'][$alias] = true;
+                    } else {
+                        $throws_import_groups[$group_key]['imports'][$alias] = $import;
+                    }
+                }
+            }
+        }
+
+        foreach ($throws_import_groups as &$group) {
+            foreach ($group['conflicting_aliases'] as $alias => $_) {
+                unset($group['imports'][$alias]);
+            }
+
+            natcasesort($group['imports']);
+        }
+        unset($group);
+
+        foreach (self::$manipulators[$file_path] as $manipulator) {
+            if ($manipulator->throwsImportGroupKey !== null) {
+                $group = $throws_import_groups[$manipulator->throwsImportGroupKey] ?? null;
+                if ($group !== null && $group['conflicting_aliases'] !== []) {
+                    $manipulator->qualifyConflictingThrowsImports($group['conflicting_aliases']);
+                }
+            }
+
             if ($manipulator->new_php_return_type) {
                 if ($manipulator->return_typehint_start && $manipulator->return_typehint_end) {
                     $file_manipulations[$manipulator->return_typehint_start] = new FileManipulation(
@@ -562,7 +630,49 @@ final class FunctionDocblockManipulator
             }
         }
 
+        foreach ($throws_import_groups as $group) {
+            if ($group['imports'] === []) {
+                continue;
+            }
+
+            $import_lines = [];
+            foreach (array_values($group['imports']) as $import) {
+                $import_lines[] = $group['indentation'] . 'use ' . $import . ';';
+            }
+
+            $insertion_text = implode("\n", $import_lines);
+            $insertion_text = $group['after_use']
+                ? "\n" . $insertion_text
+                : $insertion_text . "\n\n";
+
+            $file_manipulations[] = new FileManipulation(
+                $group['position'],
+                $group['position'],
+                $insertion_text,
+            );
+        }
+
         return $file_manipulations;
+    }
+
+    /**
+     * @param array<lowercase-string, true> $conflicting_aliases
+     * @psalm-external-mutation-free
+     */
+    private function qualifyConflictingThrowsImports(array $conflicting_aliases): void
+    {
+        foreach ($this->throwsImports as $import) {
+            $short_name = self::getClassShortName($import);
+            if (!isset($conflicting_aliases[strtolower($short_name)])) {
+                continue;
+            }
+
+            foreach ($this->throwsExceptions as $offset => $exception) {
+                if ($exception === $short_name) {
+                    $this->throwsExceptions[$offset] = '\\' . $import;
+                }
+            }
+        }
     }
 
     /**
@@ -576,11 +686,97 @@ final class FunctionDocblockManipulator
 
     /**
      * @param list<string> $exceptions
-     * @psalm-external-mutation-free
+     * @param list<string> $imports
      */
-    public function addThrowsDocblock(array $exceptions): void
-    {
+    public function addThrowsDocblock(
+        array $exceptions,
+        array $imports,
+        ProjectAnalyzer $project_analyzer,
+    ): void {
         $this->throwsExceptions = $exceptions;
+        $this->throwsImports = $imports;
+
+        if ($imports !== []) {
+            $this->initializeThrowsImportPosition($project_analyzer);
+        }
+    }
+
+    private function initializeThrowsImportPosition(ProjectAnalyzer $project_analyzer): void
+    {
+        $codebase = $project_analyzer->getCodebase();
+        $statements = $codebase->getStatementsForFile($this->file_path);
+        $function_start = (int) $this->stmt->getAttribute('startFilePos');
+        $scope_statements = $statements;
+        $namespace_start = -1;
+
+        foreach ($statements as $statement) {
+            if ($statement instanceof PhpParser\Node\Stmt\Namespace_
+                && (int) $statement->getAttribute('startFilePos') <= $function_start
+                && (int) $statement->getAttribute('endFilePos') >= $function_start
+            ) {
+                $scope_statements = $statement->stmts;
+                $namespace_start = (int) $statement->getAttribute('startFilePos');
+                break;
+            }
+        }
+
+        $this->throwsImportGroupKey = (string) $namespace_start;
+        $last_use = null;
+
+        foreach ($scope_statements as $statement) {
+            if ($statement instanceof PhpParser\Node\Stmt\Use_
+                || $statement instanceof PhpParser\Node\Stmt\GroupUse
+            ) {
+                $last_use = $statement;
+            }
+        }
+
+        $file_contents = $codebase->getFileContents($this->file_path);
+
+        if ($last_use !== null) {
+            $use_start = (int) $last_use->getAttribute('startFilePos');
+            $this->throwsImportPosition = (int) $last_use->getAttribute('endFilePos') + 1;
+            $this->throwsImportIndentation = self::getLineIndentation($file_contents, $use_start);
+            $this->throwsImportAfterUse = true;
+            return;
+        }
+
+        foreach ($scope_statements as $statement) {
+            if ($statement instanceof PhpParser\Node\Stmt\Declare_) {
+                continue;
+            }
+
+            $statement_start = (int) $statement->getAttribute('startFilePos');
+            $comments = $statement->getComments();
+            $first_comment = reset($comments);
+            if ($first_comment !== false) {
+                $statement_start = $first_comment->getStartFilePos();
+            }
+
+            $line_start = strrpos($file_contents, "\n", $statement_start - strlen($file_contents));
+            $line_start = $line_start === false ? 0 : $line_start + 1;
+
+            $this->throwsImportPosition = $line_start;
+            $this->throwsImportIndentation = substr($file_contents, $line_start, $statement_start - $line_start);
+            return;
+        }
+    }
+
+    /** @psalm-pure */
+    private static function getLineIndentation(string $file_contents, int $position): string
+    {
+        $line_start = strrpos($file_contents, "\n", $position - strlen($file_contents));
+        $line_start = $line_start === false ? 0 : $line_start + 1;
+
+        return substr($file_contents, $line_start, $position - $line_start);
+    }
+
+    /** @psalm-pure */
+    private static function getClassShortName(string $fq_class_name): string
+    {
+        $separator_position = strrpos($fq_class_name, '\\');
+
+        return $separator_position === false ? $fq_class_name : substr($fq_class_name, $separator_position + 1);
     }
 
     /**

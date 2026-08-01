@@ -189,8 +189,10 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     namespace Foo;
+                    use InvalidArgumentException;
+
                     /**
-                     * @throws \InvalidArgumentException
+                     * @throws InvalidArgumentException
                      */
                     function foo(string $s): string {
                         if("" === $s) {
@@ -220,8 +222,10 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     namespace Foo {
+                        use Bar\BarException;
+
                         /**
-                         * @throws \Bar\BarException
+                         * @throws BarException
                          */
                         function foo(): void {
                             \Bar\bar();
@@ -235,6 +239,88 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                         function bar(): void {
                             throw new BarException();
                         }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'addImportForThrowsAnnotation' => [
+                'input' => '<?php
+                    namespace Foo;
+                    use DomainException;
+                    function foo(): void {
+                        throw new \InvalidArgumentException();
+                    }',
+                'output' => '<?php
+                    namespace Foo;
+                    use DomainException;
+                    use InvalidArgumentException;
+                    /**
+                     * @throws InvalidArgumentException
+                     */
+                    function foo(): void {
+                        throw new \InvalidArgumentException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'keepFullyQualifiedThrowsAnnotationWhenImportAliasConflicts' => [
+                'input' => '<?php
+                    namespace Foo;
+                    use DomainException as InvalidArgumentException;
+                    function foo(): void {
+                        throw new \InvalidArgumentException();
+                    }',
+                'output' => '<?php
+                    namespace Foo;
+                    use DomainException as InvalidArgumentException;
+                    /**
+                     * @throws \InvalidArgumentException
+                     */
+                    function foo(): void {
+                        throw new \InvalidArgumentException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'keepFullyQualifiedThrowsAnnotationsWhenAddedImportsConflict' => [
+                'input' => '<?php
+                    namespace App {
+                        function foo(): void {
+                            throw new \Foo\Problem();
+                        }
+                        function bar(): void {
+                            throw new \Bar\Problem();
+                        }
+                    }
+                    namespace Foo {
+                        class Problem extends \Exception {}
+                    }
+                    namespace Bar {
+                        class Problem extends \Exception {}
+                    }',
+                'output' => '<?php
+                    namespace App {
+                        /**
+                         * @throws \Foo\Problem
+                         */
+                        function foo(): void {
+                            throw new \Foo\Problem();
+                        }
+                        /**
+                         * @throws \Bar\Problem
+                         */
+                        function bar(): void {
+                            throw new \Bar\Problem();
+                        }
+                    }
+                    namespace Foo {
+                        class Problem extends \Exception {}
+                    }
+                    namespace Bar {
+                        class Problem extends \Exception {}
                     }',
                 'php_version' => '7.4',
                 'issues_to_fix' => ['MissingThrowsDocblock'],

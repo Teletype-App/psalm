@@ -24,6 +24,7 @@ use Psalm\Internal\Analyzer\Statements\ExpressionAnalyzer;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\FileManipulation\FunctionDocblockManipulator;
+use Psalm\Internal\FileManipulation\ThrowsDocblockImportResolver;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\PhpVisitor\NodeCounterVisitor;
 use Psalm\Internal\Provider\NodeDataProvider;
@@ -845,16 +846,13 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         }
 
         $missingThrowsDocblockErrors = [];
+        $missingThrowsDocblockImports = [];
         if ($missingThrowsDocblockExceptions) {
             $combined_exceptions = TypeCombiner::combine($missingThrowsDocblockExceptions, $codebase);
-            foreach ($combined_exceptions->getAtomicTypes() as $exception) {
-                $missingThrowsDocblockErrors[] = $exception->toNamespacedString(
-                    $this->source->getNamespace(),
-                    $this->source->getAliasedClassesFlipped(),
-                    $this->source->getFQCLN(),
-                    true,
-                );
-            }
+            [$missingThrowsDocblockErrors, $missingThrowsDocblockImports] = ThrowsDocblockImportResolver::resolve(
+                $this->source,
+                array_values($combined_exceptions->getAtomicTypes()),
+            );
         }
 
         if ($missingThrowsDocblockErrors !== []
@@ -867,7 +865,11 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $this->source->getFilePath(),
                 $this->function,
             );
-            $manipulator->addThrowsDocblock($missingThrowsDocblockErrors);
+            $manipulator->addThrowsDocblock(
+                $missingThrowsDocblockErrors,
+                $missingThrowsDocblockImports,
+                $project_analyzer,
+            );
         }
 
         if ($codebase->taint_flow_graph
