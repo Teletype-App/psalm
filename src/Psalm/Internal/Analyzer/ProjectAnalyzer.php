@@ -946,33 +946,7 @@ final class ProjectAnalyzer
 
     public function checkFile(string $file_path): void
     {
-        $this->progress->write($this->generatePHPVersionMessage());
-        $this->progress->startPhase(Phase::SCAN, $this->scanThreads);
-
-        $this->progress->debug('Checking ' . $file_path . PHP_EOL);
-
-        $this->config->visitPreloadedStubFiles($this->codebase, $this->progress);
-
-        $this->config->hide_external_errors = $this->config->isInProjectDirs($file_path);
-
-        $this->codebase->addFilesToAnalyze([$file_path => $file_path]);
-
-        $this->file_reference_provider->loadReferenceCache();
-
-        $this->config->initializePlugins($this);
-
-        $this->codebase->scanFiles($this->scanThreads);
-
-        $this->config->visitStubFiles($this->codebase, $this->progress);
-
-        $this->progress->startPhase(Phase::ANALYSIS, $this->threads);
-
-        $this->codebase->analyzer->analyzeFiles(
-            $this,
-            $this->threads,
-            $this->codebase->alter_code,
-            $this->codebase->find_unused_code === 'always',
-        );
+        $this->checkPaths([$file_path]);
     }
 
     /**
@@ -983,7 +957,11 @@ final class ProjectAnalyzer
         $this->progress->write($this->generatePHPVersionMessage());
         $this->progress->startPhase(Phase::SCAN, $this->scanThreads);
 
+        $project_files_to_scan = [];
         if (!$this->project_files_initialized) {
+            $this->initProjectFiles();
+            $project_files_to_scan = $this->project_files;
+
             $file_extensions = $this->config->getFileExtensions();
             $this->project_files = [];
             foreach ($paths_to_check as $file_path) {
@@ -1007,7 +985,7 @@ final class ProjectAnalyzer
 
         $this->visitAutoloadFiles();
 
-        $this->codebase->scanner->addFilesToShallowScan($this->extra_files);
+        $this->codebase->scanner->addFilesToShallowScan($this->extra_files + $project_files_to_scan);
 
         foreach ($paths_to_check as $path) {
             $this->progress->debug('Checking ' . $path . PHP_EOL);
