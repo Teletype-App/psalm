@@ -1445,6 +1445,9 @@ final class Psalm
             --find-unused-code[=auto]
                 Look for unused code. Options are 'auto' or 'always'. If no value is specified, default is 'auto'
 
+            --find-unused-variables
+                Look for unused variables and parameters
+
             --find-unused-psalm-suppress
                 Finds all @psalm-suppress annotations that aren’t used
 

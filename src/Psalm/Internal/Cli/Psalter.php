@@ -86,7 +86,7 @@ final class Psalter
     private const LONG_OPTIONS = [
         'help', 'debug', 'debug-by-line', 'debug-emitted-issues', 'config:', 'file:', 'root:',
         'plugin:', 'issues:', 'list-supported-issues', 'php-version:', 'dry-run', 'safe-types',
-        'find-unused-code', 'threads:', 'scan-threads:', 'codeowner:',
+        'find-unused-code', 'find-unused-variables', 'threads:', 'scan-threads:', 'codeowner:',
         'allow-backwards-incompatible-changes:',
         'add-newline-between-docblock-annotations:',
         'no-cache',
@@ -168,6 +168,9 @@ final class Psalter
 
                 --find-unused-code
                     Include unused code as a candidate for removal
+
+                --find-unused-variables
+                    Report unused variables and parameters while applying fixes
 
                 --threads=INT
                     If greater than one, Psalm will run analysis on multiple threads, speeding things up.
@@ -406,6 +409,8 @@ final class Psalter
         }
 
         $find_unused_code = array_key_exists('find-unused-code', $options);
+        $find_unused_variables = $config->find_unused_variables
+            || array_key_exists('find-unused-variables', $options);
 
         foreach ($keyed_issues as $issue_name => $_) {
             // MissingParamType requires the scanning of all files to inform possible params
@@ -423,9 +428,14 @@ final class Psalter
             $project_analyzer->getCodebase()->reportUnusedCode();
         }
 
+        if ($find_unused_variables) {
+            $project_analyzer->getCodebase()->reportUnusedVariables();
+        }
+
         $project_analyzer->alterCodeAfterCompletion(
             array_key_exists('dry-run', $options),
             array_key_exists('safe-types', $options),
+            $find_unused_variables,
         );
 
         if ($keyed_issues === ['all' => true]) {

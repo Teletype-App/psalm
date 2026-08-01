@@ -1093,10 +1093,11 @@ final class ProjectAnalyzer
     public function alterCodeAfterCompletion(
         bool $dry_run = false,
         bool $safe_types = false,
+        bool $show_issues = false,
     ): void {
         $this->codebase->alter_code = true;
         $this->codebase->infer_types_from_usage = true;
-        $this->show_issues = false;
+        $this->show_issues = $show_issues;
         $this->dry_run = $dry_run;
         $this->only_replace_php_types_with_non_docblock_types = $safe_types;
     }

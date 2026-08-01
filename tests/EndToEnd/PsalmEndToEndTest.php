@@ -99,7 +99,17 @@ final class PsalmEndToEndTest extends TestCase
 
     public function testHelpReturnsMessage(): void
     {
-        $this->assertStringContainsString('Usage:', $this->runPsalm(['--help'], self::$tmpDir)['STDOUT']);
+        $output = $this->runPsalm(['--help'], self::$tmpDir)['STDOUT'];
+
+        $this->assertStringContainsString('Usage:', $output);
+        $this->assertStringContainsString('--find-unused-variables', $output);
+    }
+
+    public function testPsalterHelpContainsFindUnusedVariablesOption(): void
+    {
+        $output = $this->runPsalm(['--alter', '--help'], self::$tmpDir)['STDOUT'];
+
+        $this->assertStringContainsString('--find-unused-variables', $output);
     }
 
     public function testInit(): void
@@ -136,6 +146,50 @@ final class PsalmEndToEndTest extends TestCase
 
         (new Process([PHP_BINARY, $this->psalter, '--alter', '--issues=InvalidReturnType'], self::$tmpDir))->mustRun();
         $this->assertSame(0, $this->runPsalm([], self::$tmpDir)['CODE']);
+    }
+
+    public function testPsalterReportsUnusedVariablesWhileAltering(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+        file_put_contents(
+            self::$tmpDir . '/src/FileWithErrors.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                function execute(): void
+                {
+                    $unused = 1;
+
+                    throw new RuntimeException();
+                }
+                PHP,
+        );
+
+        $result = $this->runPsalm(
+            ['--alter', '--issues=MissingThrowsDocblock', '--find-unused-variables'],
+            self::$tmpDir,
+            true,
+        );
+
+        $this->assertSame(2, $result['CODE']);
+        $this->assertStringContainsString('UnusedVariable', $result['STDOUT']);
+        $this->assertStringNotContainsString('MissingThrowsDocblock -', $result['STDOUT']);
+        $this->assertStringContainsString(
+            '@throws RuntimeException',
+            (string) file_get_contents(self::$tmpDir . '/src/FileWithErrors.php'),
+        );
     }
 
     public function testPsalm(): void

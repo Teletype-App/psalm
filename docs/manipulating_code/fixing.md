@@ -25,6 +25,16 @@ Updating code is inherently risky, doing so automatically is even more so. I've 
 - it has a `--safe-types` mode that will only update PHP 7 return typehints with information Psalm has gathered from non-docblock sources of type information (e.g. typehinted params, `instanceof` checks, other return typehints etc.)
 - using `--allow-backwards-incompatible-changes=false` you can make sure to not create backwards incompatible changes
 
+## Reporting unused variables while fixing code
+
+Psalter can report unused variables and parameters during the same analysis pass that applies fixes:
+
+```bash
+vendor/bin/psalter --issues=MissingThrowsDocblock --find-unused-variables src/Service.php
+```
+
+Issues selected by `--issues` are fixed and omitted from the report. Remaining issues, including unused variables and parameters, are reported normally and produce a non-zero exit code.
+
 
 ## Plugins
 
