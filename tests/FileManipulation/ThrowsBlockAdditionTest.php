@@ -178,6 +178,117 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'preserveExistingThrowsWhenOtherDocblockTagsAreInvalid' => [
+                'input' => '<?php
+                    namespace Foo;
+                    use Exception;
+                    class SomeClass {
+                        /**
+                         * @return void
+                         * @return void
+                         * @throws Exception
+                         * @throws Exception
+                         */
+                        public function foo(): void {
+                            throw new \RuntimeException();
+                        }
+                    }',
+                'output' => '<?php
+                    namespace Foo;
+                    use Exception;
+                    class SomeClass {
+                        /**
+                         * @return void
+                         * @return void
+                         *
+                         * @throws Exception
+                         */
+                        public function foo(): void {
+                            throw new \RuntimeException();
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'removeDuplicateThrowsAnnotation' => [
+                'input' => '<?php
+                    /**
+                     * @throws Exception
+                     * @throws Exception
+                     */
+                    function foo(): void {
+                        throw new Exception();
+                    }',
+                'output' => '<?php
+                    /**
+                     * @throws Exception
+                     */
+                    function foo(): void {
+                        throw new Exception();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'ignoreMalformedThrowsAnnotation' => [
+                'input' => '<?php
+                    class SomeClass {
+                        /** @throws Exception*@throws RuntimeException */
+                        public function malformed(): void {}
+
+                        public function caller(): void {
+                            $this->malformed();
+                        }
+                    }',
+                'output' => '<?php
+                    class SomeClass {
+                        /** @throws Exception*@throws RuntimeException */
+                        public function malformed(): void {}
+
+                        public function caller(): void {
+                            $this->malformed();
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'recognizeThrowsAnnotationUsingImportedNamespacePrefix' => [
+                'input' => '<?php
+                    namespace yii\base {
+                        class InvalidArgumentException extends \Exception {}
+                    }
+                    namespace app\models {
+                        use DomainException as InvalidArgumentException;
+                        use Yii;
+
+                        class SomeClass {
+                            /** @throws Yii\base\InvalidArgumentException */
+                            public function foo(): void {
+                                throw new \yii\base\InvalidArgumentException();
+                            }
+                        }
+                    }',
+                'output' => '<?php
+                    namespace yii\base {
+                        class InvalidArgumentException extends \Exception {}
+                    }
+                    namespace app\models {
+                        use DomainException as InvalidArgumentException;
+                        use Yii;
+
+                        class SomeClass {
+                            /** @throws Yii\base\InvalidArgumentException */
+                            public function foo(): void {
+                                throw new \yii\base\InvalidArgumentException();
+                            }
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'addThrowsAnnotationToFunctionInNamespace' => [
                 'input' => '<?php
                     namespace Foo;
@@ -260,6 +371,36 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                      */
                     function foo(): void {
                         throw new \InvalidArgumentException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'reuseExistingImportForThrowsAnnotationInTrait' => [
+                'input' => '<?php
+                    namespace Foo;
+                    use Exception;
+                    trait SomeTrait {
+                        public function foo(): void {
+                            throw new Exception();
+                        }
+                    }
+                    class UsesSomeTrait {
+                        use SomeTrait;
+                    }',
+                'output' => '<?php
+                    namespace Foo;
+                    use Exception;
+                    trait SomeTrait {
+                        /**
+                         * @throws Exception
+                         */
+                        public function foo(): void {
+                            throw new Exception();
+                        }
+                    }
+                    class UsesSomeTrait {
+                        use SomeTrait;
                     }',
                 'php_version' => '7.4',
                 'issues_to_fix' => ['MissingThrowsDocblock'],

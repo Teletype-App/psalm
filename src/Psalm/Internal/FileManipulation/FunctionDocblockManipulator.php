@@ -27,6 +27,7 @@ use function is_string;
 use function ltrim;
 use function natcasesort;
 use function preg_match;
+use function preg_split;
 use function reset;
 use function str_replace;
 use function str_split;
@@ -95,6 +96,8 @@ final class FunctionDocblockManipulator
 
     /** @var list<string> */
     private array $throwsImports = [];
+
+    private bool $normalizeThrowsDocblock = false;
 
     private ?string $throwsImportGroupKey = null;
 
@@ -452,6 +455,29 @@ final class FunctionDocblockManipulator
             }
         }
 
+        if ($this->normalizeThrowsDocblock && isset($parsed_docblock->tags['throws'])) {
+            $throws_tags = [];
+            $seen_throws_clauses = [];
+
+            foreach ($parsed_docblock->tags['throws'] as $throws_tag) {
+                $throws_parts = preg_split('/[\s]+/', $throws_tag);
+                $throws_clause = strtolower($throws_parts[0] ?? '');
+
+                if ($throws_clause !== '' && isset($seen_throws_clauses[$throws_clause])) {
+                    $modified_docblock = true;
+                    continue;
+                }
+
+                if ($throws_clause !== '') {
+                    $seen_throws_clauses[$throws_clause] = true;
+                }
+
+                $throws_tags[] = $throws_tag;
+            }
+
+            $parsed_docblock->tags['throws'] = $throws_tags;
+        }
+
 
         if ($this->new_phpdoc_return_type && $this->new_phpdoc_return_type !== $old_phpdoc_return_type) {
             $modified_docblock = true;
@@ -693,6 +719,7 @@ final class FunctionDocblockManipulator
         array $imports,
         ProjectAnalyzer $project_analyzer,
     ): void {
+        $this->normalizeThrowsDocblock = true;
         $this->throwsExceptions = $exceptions;
         $this->throwsImports = $imports;
 

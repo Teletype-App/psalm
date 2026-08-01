@@ -809,12 +809,21 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             }
         }
 
+        $documented_throws_analysis = ThrowsDocblockImportResolver::analyzeDocumentedThrows(
+            $this->source,
+            $this->function->getDocComment(),
+        );
+        $documented_throws = $storage->throws + $documented_throws_analysis['documented_throws'];
         $missingThrowsDocblockExceptions = [];
         foreach ($statements_analyzer->getUncaughtThrows($context) as $possibly_thrown_exception => $codelocations) {
+            if (!ThrowsDocblockImportResolver::isValidClassLikeName($possibly_thrown_exception)) {
+                continue;
+            }
+
             $is_expected = false;
 
-            foreach ($storage->throws as $expected_exception => $_) {
-                if ($expected_exception === $possibly_thrown_exception
+            foreach ($documented_throws as $expected_exception => $_) {
+                if (strtolower($expected_exception) === strtolower($possibly_thrown_exception)
                     || (
                         $codebase->classOrInterfaceExists($possibly_thrown_exception, null, $context)
                         && (
@@ -855,7 +864,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             );
         }
 
-        if ($missingThrowsDocblockErrors !== []
+        if (($missingThrowsDocblockErrors !== [] || $documented_throws_analysis['has_duplicates'])
             && $codebase->alter_code
             && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
             && !$this->function instanceof VirtualNode
