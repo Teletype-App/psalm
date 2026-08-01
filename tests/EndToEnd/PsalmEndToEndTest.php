@@ -176,15 +176,47 @@ final class PsalmEndToEndTest extends TestCase
                 }
                 PHP,
         );
+        file_put_contents(
+            self::$tmpDir . '/src/SelectedFile.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                function selected(): void
+                {
+                }
+                PHP,
+        );
+        file_put_contents(
+            self::$tmpDir . '/src/UnselectedFile.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                function unselected(): void
+                {
+                    undefined_function();
+                }
+                PHP,
+        );
 
         $result = $this->runPsalm(
-            ['--alter', '--issues=MissingThrowsDocblock', '--find-unused-variables'],
+            [
+                '--alter',
+                '--issues=MissingThrowsDocblock',
+                '--find-unused-variables',
+                self::$tmpDir . '/src/FileWithErrors.php',
+                self::$tmpDir . '/src/SelectedFile.php',
+            ],
             self::$tmpDir,
             true,
         );
 
         $this->assertSame(2, $result['CODE']);
         $this->assertStringContainsString('UnusedVariable', $result['STDOUT']);
+        $this->assertStringNotContainsString('UnselectedFile.php', $result['STDOUT']);
         $this->assertStringNotContainsString('MissingThrowsDocblock -', $result['STDOUT']);
         $this->assertStringContainsString(
             '@throws RuntimeException',

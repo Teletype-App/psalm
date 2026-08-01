@@ -34,7 +34,6 @@ use function array_shift;
 use function array_slice;
 use function assert;
 use function chdir;
-use function count;
 use function explode;
 use function file_exists;
 use function file_get_contents;
@@ -451,7 +450,7 @@ final class Psalter
 
         $start_time = microtime(true);
 
-        if ($paths_to_check === null || count($paths_to_check) > 1 || $find_unused_code) {
+        if ($paths_to_check === null || $find_unused_code) {
             if ($paths_to_check) {
                 $files_to_update = [];
 
@@ -470,13 +469,7 @@ final class Psalter
 
             $project_analyzer->check($current_dir);
         } elseif ($paths_to_check) {
-            foreach ($paths_to_check as $path_to_check) {
-                if (is_dir($path_to_check)) {
-                    $project_analyzer->checkDir($path_to_check);
-                } else {
-                    $project_analyzer->checkFile($path_to_check);
-                }
-            }
+            $project_analyzer->checkPaths($paths_to_check);
         }
 
         IssueBuffer::finish($project_analyzer, false, $start_time);
