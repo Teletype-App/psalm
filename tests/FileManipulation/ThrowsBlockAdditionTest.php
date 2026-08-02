@@ -104,6 +104,49 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['UnusedThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'preserveThrowsAnnotationAfterStaticPropertyFetch' => [
+                'input' => '<?php
+                    class Service {
+                        /** @throws RuntimeException */
+                        public function execute(): void {
+                            throw new RuntimeException();
+                        }
+                    }
+
+                    class Yii {
+                        /** @var Service */
+                        public static $app;
+                    }
+
+                    class Consumer {
+                        /** @throws RuntimeException */
+                        public function execute(): void {
+                            Yii::$app->execute();
+                        }
+                    }',
+                'output' => '<?php
+                    class Service {
+                        /** @throws RuntimeException */
+                        public function execute(): void {
+                            throw new RuntimeException();
+                        }
+                    }
+
+                    class Yii {
+                        /** @var Service */
+                        public static $app;
+                    }
+
+                    class Consumer {
+                        /** @throws RuntimeException */
+                        public function execute(): void {
+                            Yii::$app->execute();
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['UnusedThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'addThrowsAnnotationToFunction' => [
                 'input' => '<?php
                     function foo(string $s): string {
