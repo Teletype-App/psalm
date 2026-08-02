@@ -183,6 +183,7 @@ final class PsalmEndToEndTest extends TestCase
 
                 namespace Foo;
 
+                /** @throws \RuntimeException */
                 function selected(): void
                 {
                 }
@@ -205,7 +206,7 @@ final class PsalmEndToEndTest extends TestCase
         $result = $this->runPsalm(
             [
                 '--alter',
-                '--issues=MissingThrowsDocblock',
+                '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
                 '--find-unused-variables',
                 self::$tmpDir . '/src/FileWithErrors.php',
                 self::$tmpDir . '/src/SelectedFile.php',
@@ -221,6 +222,10 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertStringContainsString(
             '@throws RuntimeException',
             (string) file_get_contents(self::$tmpDir . '/src/FileWithErrors.php'),
+        );
+        $this->assertStringNotContainsString(
+            '@throws',
+            (string) file_get_contents(self::$tmpDir . '/src/SelectedFile.php'),
         );
     }
 

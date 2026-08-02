@@ -875,22 +875,22 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                     continue;
                 }
 
-                if (!IssueBuffer::accepts(
-                    new UnusedThrowsDocblock(
-                        $documented_exception . ' is documented in @throws but is not found among inferred'
-                            . ' uncaught exceptions',
-                        $storage->throw_locations[$documented_exception],
-                        $documented_exception,
-                    ),
-                    $storage->suppressed_issues,
-                    true,
-                )) {
-                    continue;
+                $issue = new UnusedThrowsDocblock(
+                    $documented_exception . ' is documented in @throws but is not found among inferred'
+                        . ' uncaught exceptions',
+                    $storage->throw_locations[$documented_exception],
+                    $documented_exception,
+                );
+
+                if (!IssueBuffer::isSuppressed($issue, $storage->suppressed_issues)) {
+                    $documented_throw_names =
+                        $documented_throws_analysis['documented_throw_names'][$documented_exception];
+                    foreach ($documented_throw_names as $throw_name) {
+                        $unusedThrowsDocblockExceptions[] = $throw_name;
+                    }
                 }
 
-                foreach ($documented_throws_analysis['documented_throw_names'][$documented_exception] as $throw_name) {
-                    $unusedThrowsDocblockExceptions[] = $throw_name;
-                }
+                IssueBuffer::maybeAdd($issue, $storage->suppressed_issues, true);
             }
         }
 

@@ -413,7 +413,7 @@ final class Psalter
 
         foreach ($keyed_issues as $issue_name => $_) {
             // MissingParamType requires the scanning of all files to inform possible params
-            if (str_contains($issue_name, 'Unused')
+            if ((str_contains($issue_name, 'Unused') && $issue_name !== 'UnusedThrowsDocblock')
                 || $issue_name === 'MissingParamType'
                 || $issue_name === 'UnnecessaryVarAnnotation'
                 || $issue_name === 'all'
