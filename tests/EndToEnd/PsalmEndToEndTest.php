@@ -174,6 +174,12 @@ final class PsalmEndToEndTest extends TestCase
 
                     throw new RuntimeException();
                 }
+
+                /** @throws \Exception */
+                function broad(): void
+                {
+                    throw new RuntimeException();
+                }
                 PHP,
         );
         file_put_contents(
@@ -206,7 +212,7 @@ final class PsalmEndToEndTest extends TestCase
         $result = $this->runPsalm(
             [
                 '--alter',
-                '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+                '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
                 '--find-unused-variables',
                 self::$tmpDir . '/src/FileWithErrors.php',
                 self::$tmpDir . '/src/SelectedFile.php',
@@ -221,6 +227,10 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertStringNotContainsString('MissingThrowsDocblock -', $result['STDOUT']);
         $this->assertStringContainsString(
             '@throws RuntimeException',
+            (string) file_get_contents(self::$tmpDir . '/src/FileWithErrors.php'),
+        );
+        $this->assertStringNotContainsString(
+            '@throws \Exception',
             (string) file_get_contents(self::$tmpDir . '/src/FileWithErrors.php'),
         );
         $this->assertStringNotContainsString(

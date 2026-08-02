@@ -68,6 +68,196 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock', 'UnusedThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'narrowCustomParentThrowsAnnotation' => [
+                'input' => '<?php
+                    class ApplicationException extends Exception {}
+                    class InvalidApplicationState extends ApplicationException {}
+
+                    /** @throws ApplicationException when application state is invalid */
+                    function foo(): void {
+                        throw new InvalidApplicationState();
+                    }',
+                'output' => '<?php
+                    class ApplicationException extends Exception {}
+                    class InvalidApplicationState extends ApplicationException {}
+
+                    /**
+                     * @throws InvalidApplicationState when application state is invalid
+                     */
+                    function foo(): void {
+                        throw new InvalidApplicationState();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'narrowThrowsAnnotationToMultipleInferredExceptions' => [
+                'input' => '<?php
+                    /** @throws Exception */
+                    function foo(bool $invalid): void {
+                        if ($invalid) {
+                            throw new InvalidArgumentException();
+                        }
+
+                        throw new RuntimeException();
+                    }',
+                'output' => '<?php
+                    /**
+                     * @throws InvalidArgumentException|RuntimeException
+                     */
+                    function foo(bool $invalid): void {
+                        if ($invalid) {
+                            throw new InvalidArgumentException();
+                        }
+
+                        throw new RuntimeException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'removeBroadThrowsCoveredByNarrowerAnnotation' => [
+                'input' => '<?php
+                    /**
+                     * @throws Exception generic failure
+                     * @throws RuntimeException runtime failure
+                     */
+                    function foo(): void {
+                        throw new RuntimeException();
+                    }',
+                'output' => '<?php
+                    /**
+                     * @throws RuntimeException runtime failure
+                     */
+                    function foo(): void {
+                        throw new RuntimeException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'narrowThrowsAndAddUnrelatedExceptionInSinglePass' => [
+                'input' => '<?php
+                    /** @throws Exception */
+                    function foo(bool $invalid): void {
+                        if ($invalid) {
+                            throw new InvalidArgumentException();
+                        }
+
+                        throw new TypeError();
+                    }',
+                'output' => '<?php
+                    /**
+                     * @throws InvalidArgumentException
+                     * @throws TypeError
+                     */
+                    function foo(bool $invalid): void {
+                        if ($invalid) {
+                            throw new InvalidArgumentException();
+                        }
+
+                        throw new TypeError();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock', 'OverlyBroadThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'narrowThrowsFromFunctionWithReturnTypeProvider' => [
+                'input' => '<?php
+                    namespace App;
+
+                    class Security {
+                        /**
+                         * @throws \Exception
+                         * @throws \ValueError
+                         */
+                        public function random(int $length): int {
+                            if ($length < 1) {
+                                throw new \InvalidArgumentException();
+                            }
+
+                            return random_int(1, $length);
+                        }
+                    }',
+                'output' => '<?php
+                    namespace App;
+
+                    use InvalidArgumentException;
+                    use Random\RandomException;
+
+                    class Security {
+                        /**
+                         * @throws InvalidArgumentException|RandomException
+                         * @throws \ValueError
+                         */
+                        public function random(int $length): int {
+                            if ($length < 1) {
+                                throw new \InvalidArgumentException();
+                            }
+
+                            return random_int(1, $length);
+                        }
+                    }',
+                'php_version' => '8.5',
+                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'preserveThrowsAnnotationWhenParentCanBeThrown' => [
+                'input' => '<?php
+                    class ApplicationException extends Exception {}
+                    class InvalidApplicationState extends ApplicationException {}
+
+                    /** @throws ApplicationException */
+                    function foo(bool $specific): void {
+                        if ($specific) {
+                            throw new InvalidApplicationState();
+                        }
+
+                        throw new ApplicationException();
+                    }',
+                'output' => '<?php
+                    class ApplicationException extends Exception {}
+                    class InvalidApplicationState extends ApplicationException {}
+
+                    /** @throws ApplicationException */
+                    function foo(bool $specific): void {
+                        if ($specific) {
+                            throw new InvalidApplicationState();
+                        }
+
+                        throw new ApplicationException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'preserveSuppressedOverlyBroadThrowsAnnotation' => [
+                'input' => '<?php
+                    class ApplicationException extends Exception {}
+                    class InvalidApplicationState extends ApplicationException {}
+
+                    /**
+                     * @throws ApplicationException
+                     * @psalm-suppress OverlyBroadThrowsDocblock
+                     */
+                    function foo(): void {
+                        throw new InvalidApplicationState();
+                    }',
+                'output' => '<?php
+                    class ApplicationException extends Exception {}
+                    class InvalidApplicationState extends ApplicationException {}
+
+                    /**
+                     * @throws ApplicationException
+                     * @psalm-suppress OverlyBroadThrowsDocblock
+                     */
+                    function foo(): void {
+                        throw new InvalidApplicationState();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'preserveThrowsAnnotationOnAbstractMethod' => [
                 'input' => '<?php
                     abstract class Foo {
@@ -594,6 +784,49 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'php_version' => '7.4',
                 'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'keepFullyQualifiedNarrowedThrowsAnnotationsWhenImportsConflict' => [
+                'input' => '<?php
+                    namespace App {
+                        /** @throws \Exception */
+                        function foo(): void {
+                            throw new \Foo\Problem();
+                        }
+                        /** @throws \Exception */
+                        function bar(): void {
+                            throw new \Bar\Problem();
+                        }
+                    }
+                    namespace Foo {
+                        class Problem extends \Exception {}
+                    }
+                    namespace Bar {
+                        class Problem extends \Exception {}
+                    }',
+                'output' => '<?php
+                    namespace App {
+                        /**
+                         * @throws \Foo\Problem
+                         */
+                        function foo(): void {
+                            throw new \Foo\Problem();
+                        }
+                        /**
+                         * @throws \Bar\Problem
+                         */
+                        function bar(): void {
+                            throw new \Bar\Problem();
+                        }
+                    }
+                    namespace Foo {
+                        class Problem extends \Exception {}
+                    }
+                    namespace Bar {
+                        class Problem extends \Exception {}
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
                 'safe_types' => true,
             ],
             'addThrowsAnnotationAccountsForUseStatements' => [

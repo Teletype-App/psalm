@@ -297,6 +297,7 @@ final class DocumentationTest extends TestCase
             switch ($issue_name) {
                 case 'InvalidStringClass':
                 case 'MissingThrowsDocblock':
+                case 'OverlyBroadThrowsDocblock':
                 case 'PluginClass':
                 case 'RedundantIdentityWithTrue':
                 case 'TraitMethodSignatureMismatch':

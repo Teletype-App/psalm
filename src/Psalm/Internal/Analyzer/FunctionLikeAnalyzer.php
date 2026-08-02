@@ -48,6 +48,7 @@ use Psalm\Issue\MissingOverrideAttribute;
 use Psalm\Issue\MissingParamType;
 use Psalm\Issue\MissingPureAnnotation;
 use Psalm\Issue\MissingThrowsDocblock;
+use Psalm\Issue\OverlyBroadThrowsDocblock;
 use Psalm\Issue\ParadoxicalCondition;
 use Psalm\Issue\ReferenceConstraintViolation;
 use Psalm\Issue\ReservedWord;
@@ -83,6 +84,7 @@ use function array_key_exists;
 use function array_keys;
 use function array_merge;
 use function array_search;
+use function array_unique;
 use function array_values;
 use function count;
 use function end;
@@ -854,6 +856,8 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         }
 
         $unusedThrowsDocblockExceptions = [];
+        $overlyBroadThrowsDocblockReplacements = [];
+        $overlyBroadThrowsDocblockImports = [];
         if ($codebase->config->check_for_throws_docblock
             && !($this->function instanceof ClassMethod && $this->function->stmts === null)
         ) {
@@ -891,6 +895,102 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 }
 
                 IssueBuffer::maybeAdd($issue, $storage->suppressed_issues, true);
+            }
+
+            $check_overly_broad_throws = isset(
+                $codebase->config->getIssueHandlers()['OverlyBroadThrowsDocblock'],
+            ) || isset($project_analyzer->getIssuesToFix()['OverlyBroadThrowsDocblock']);
+
+            if ($check_overly_broad_throws) {
+                foreach ($documented_throws_analysis['documented_throws'] as $documented_exception => $_) {
+                    $inferred_exception_names = [];
+                    $is_exactly_thrown = false;
+
+                    foreach ($uncaught_throws as $possibly_thrown_exception => $_) {
+                        if (!self::isExceptionDocumented(
+                            $codebase,
+                            $context,
+                            $possibly_thrown_exception,
+                            $documented_exception,
+                        )) {
+                            continue;
+                        }
+
+                        if (strtolower($possibly_thrown_exception) === strtolower($documented_exception)) {
+                            $is_exactly_thrown = true;
+                            break;
+                        }
+
+                        if (ThrowsDocblockImportResolver::isValidClassLikeName($possibly_thrown_exception)) {
+                            $inferred_exception_names[] = $possibly_thrown_exception;
+                        }
+                    }
+
+                    if ($is_exactly_thrown
+                        || $inferred_exception_names === []
+                        || !isset($storage->throw_locations[$documented_exception])
+                    ) {
+                        continue;
+                    }
+
+                    $replacement_exception_types = [];
+                    foreach ($inferred_exception_names as $inferred_exception) {
+                        foreach ($documented_throws_analysis['documented_throws'] as $other_exception => $_) {
+                            if (strtolower($other_exception) === strtolower($documented_exception)
+                                || !self::isExceptionDocumented(
+                                    $codebase,
+                                    $context,
+                                    $other_exception,
+                                    $documented_exception,
+                                )
+                                || !self::isExceptionDocumented(
+                                    $codebase,
+                                    $context,
+                                    $inferred_exception,
+                                    $other_exception,
+                                )
+                            ) {
+                                continue;
+                            }
+
+                            continue 2;
+                        }
+
+                        $replacement_exception_types[] = new TNamedObject($inferred_exception);
+                    }
+
+                    $replacement_exceptions = [];
+                    $replacement_imports = [];
+                    if ($replacement_exception_types !== []) {
+                        $combined_exceptions = TypeCombiner::combine($replacement_exception_types, $codebase);
+                        [$replacement_exceptions, $replacement_imports] = ThrowsDocblockImportResolver::resolve(
+                            $this->source,
+                            array_values($combined_exceptions->getAtomicTypes()),
+                        );
+                    }
+
+                    $issue = new OverlyBroadThrowsDocblock(
+                        $documented_exception . ' is broader than inferred uncaught exceptions '
+                            . implode('|', $inferred_exception_names),
+                        $storage->throw_locations[$documented_exception],
+                        $documented_exception,
+                    );
+
+                    if (!IssueBuffer::isSuppressed($issue, $storage->suppressed_issues)) {
+                        $documented_throw_names =
+                            $documented_throws_analysis['documented_throw_names'][$documented_exception];
+                        foreach ($documented_throw_names as $throw_name) {
+                            $overlyBroadThrowsDocblockReplacements[$throw_name] = $replacement_exceptions;
+                        }
+
+                        $overlyBroadThrowsDocblockImports = array_merge(
+                            $overlyBroadThrowsDocblockImports,
+                            $replacement_imports,
+                        );
+                    }
+
+                    IssueBuffer::maybeAdd($issue, $storage->suppressed_issues, true);
+                }
             }
         }
 
@@ -932,6 +1032,23 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $this->function,
             );
             $manipulator->removeThrowsDocblock($unusedThrowsDocblockExceptions);
+        }
+
+        if ($overlyBroadThrowsDocblockReplacements !== []
+            && $codebase->alter_code
+            && isset($project_analyzer->getIssuesToFix()['OverlyBroadThrowsDocblock'])
+            && !$this->function instanceof VirtualNode
+        ) {
+            $manipulator = FunctionDocblockManipulator::getForFunction(
+                $project_analyzer,
+                $this->source->getFilePath(),
+                $this->function,
+            );
+            $manipulator->replaceThrowsDocblock(
+                $overlyBroadThrowsDocblockReplacements,
+                array_values(array_unique($overlyBroadThrowsDocblockImports)),
+                $project_analyzer,
+            );
         }
 
         if ($codebase->taint_flow_graph

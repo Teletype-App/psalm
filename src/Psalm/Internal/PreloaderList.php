@@ -1214,6 +1214,7 @@ final class PreloaderList {
         \Psalm\Issue\NullPropertyFetch::class,
         \Psalm\Issue\NullReference::class,
         \Psalm\Issue\NullableReturnStatement::class,
+        \Psalm\Issue\OverlyBroadThrowsDocblock::class,
         \Psalm\Issue\OverriddenFinalConstant::class,
         \Psalm\Issue\OverriddenInterfaceConstant::class,
         \Psalm\Issue\OverriddenMethodAccess::class,

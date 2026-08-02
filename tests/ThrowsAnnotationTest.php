@@ -153,6 +153,140 @@ final class ThrowsAnnotationTest extends TestCase
         $this->analyzeFile('somefile.php', $context);
     }
 
+    public function testOverlyBroadThrowsDocblock(): void
+    {
+        $this->expectExceptionMessage('OverlyBroadThrowsDocblock');
+        $this->expectException(CodeException::class);
+        Config::getInstance()->check_for_throws_docblock = true;
+        Config::getInstance()->setCustomErrorLevel('OverlyBroadThrowsDocblock', Config::REPORT_ERROR);
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                class ApplicationException extends Exception {}
+                class InvalidApplicationState extends ApplicationException {}
+
+                /** @throws ApplicationException */
+                function foo(): void {
+                    throw new InvalidApplicationState();
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testDoesNotReportOverlyBroadThrowsDocblockWhenParentCanBeThrown(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+        Config::getInstance()->setCustomErrorLevel('OverlyBroadThrowsDocblock', Config::REPORT_ERROR);
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                class ApplicationException extends Exception {}
+                class InvalidApplicationState extends ApplicationException {}
+
+                /** @throws ApplicationException */
+                function foo(bool $specific): void {
+                    if ($specific) {
+                        throw new InvalidApplicationState();
+                    }
+
+                    throw new ApplicationException();
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testDoesNotNarrowRethrownThrowable(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+        Config::getInstance()->setCustomErrorLevel('OverlyBroadThrowsDocblock', Config::REPORT_ERROR);
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /** @throws Throwable */
+                function foo(): void {
+                    try {
+                        throw new RuntimeException();
+                    } catch (Throwable $throwable) {
+                        throw $throwable;
+                    }
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testRandomIntThrowsRandomException(): void
+    {
+        $this->expectExceptionMessage('RandomException');
+        $this->expectException(CodeException::class);
+        Config::getInstance()->check_for_throws_docblock = true;
+        Config::getInstance()->setCustomErrorLevel('OverlyBroadThrowsDocblock', Config::REPORT_ERROR);
+        $this->project_analyzer->setPhpVersion('8.5', 'tests');
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /** @throws Exception|ValueError */
+                function foo(): int {
+                    return random_int(1, 10);
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testFirstClassRandomIntCallableDoesNotThrow(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+        $this->project_analyzer->setPhpVersion('8.5', 'tests');
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                function foo(): Closure {
+                    return random_int(...);
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testUndocumentedThrowInsideLoop(): void
+    {
+        $this->expectExceptionMessage('MissingThrowsDocblock');
+        $this->expectException(CodeException::class);
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                function foo(): void {
+                    for ($i = 0; $i < 1; ++$i) {
+                        throw new RuntimeException();
+                    }
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
     public function testDoesNotReportUnusedThrowsDocblockForAbstractMethod(): void
     {
         Config::getInstance()->check_for_throws_docblock = true;

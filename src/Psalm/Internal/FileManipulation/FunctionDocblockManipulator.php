@@ -18,8 +18,10 @@ use Psalm\Internal\Scanner\ParsedDocblock;
 use Psalm\Storage\Mutations;
 
 use function array_key_exists;
+use function array_merge;
 use function array_reduce;
 use function array_slice;
+use function array_unique;
 use function array_values;
 use function count;
 use function explode;
@@ -101,6 +103,9 @@ final class FunctionDocblockManipulator
 
     /** @var list<string> */
     private array $removedThrowsExceptions = [];
+
+    /** @var array<lowercase-string, list<string>> */
+    private array $replacedThrowsExceptions = [];
 
     private bool $normalizeThrowsDocblock = false;
 
@@ -480,7 +485,67 @@ final class FunctionDocblockManipulator
                     . (isset($throws_parts[1]) ? ' ' . $throws_parts[1] : '');
             }
 
-            $parsed_docblock->tags['throws'] = $throws_tags;
+            if ($throws_tags === []) {
+                unset($parsed_docblock->tags['throws']);
+            } else {
+                $parsed_docblock->tags['throws'] = $throws_tags;
+            }
+        }
+
+        if ($this->replacedThrowsExceptions !== [] && isset($parsed_docblock->tags['throws'])) {
+            $throws_tags = [];
+            foreach ($parsed_docblock->tags['throws'] as $throws_tag) {
+                $throws_parts = preg_split('/[\s]+/', $throws_tag, 2);
+                if ($throws_parts === false || $throws_parts[0] === '') {
+                    $throws_tags[] = $throws_tag;
+                    continue;
+                }
+
+                $remaining_exceptions = [];
+                $remaining_exceptions_lc = [];
+                $throws_tag_modified = false;
+                foreach (explode('|', $throws_parts[0]) as $exception) {
+                    $exception = trim($exception);
+                    $exception_lc = strtolower($exception);
+
+                    if (array_key_exists($exception_lc, $this->replacedThrowsExceptions)) {
+                        foreach ($this->replacedThrowsExceptions[$exception_lc] as $replacement_exception) {
+                            $replacement_exception_lc = strtolower($replacement_exception);
+                            if (!isset($remaining_exceptions_lc[$replacement_exception_lc])) {
+                                $remaining_exceptions[] = $replacement_exception;
+                                $remaining_exceptions_lc[$replacement_exception_lc] = true;
+                            }
+                        }
+
+                        $throws_tag_modified = true;
+                        continue;
+                    }
+
+                    if ($exception !== '' && !isset($remaining_exceptions_lc[$exception_lc])) {
+                        $remaining_exceptions[] = $exception;
+                        $remaining_exceptions_lc[$exception_lc] = true;
+                    }
+                }
+
+                if (!$throws_tag_modified) {
+                    $throws_tags[] = $throws_tag;
+                    continue;
+                }
+
+                $modified_docblock = true;
+                if ($remaining_exceptions === []) {
+                    continue;
+                }
+
+                $throws_tags[] = implode('|', $remaining_exceptions)
+                    . (isset($throws_parts[1]) ? ' ' . $throws_parts[1] : '');
+            }
+
+            if ($throws_tags === []) {
+                unset($parsed_docblock->tags['throws']);
+            } else {
+                $parsed_docblock->tags['throws'] = $throws_tags;
+            }
         }
 
         if (count($this->throwsExceptions) > 0) {
@@ -742,6 +807,17 @@ final class FunctionDocblockManipulator
                     $this->throwsExceptions[$offset] = '\\' . $import;
                 }
             }
+
+            foreach ($this->replacedThrowsExceptions as $replaced_exception => $replacement_exceptions) {
+                $qualified_replacement_exceptions = [];
+                foreach ($replacement_exceptions as $exception) {
+                    $qualified_replacement_exceptions[] = $exception === $short_name
+                        ? '\\' . $import
+                        : $exception;
+                }
+
+                $this->replacedThrowsExceptions[$replaced_exception] = $qualified_replacement_exceptions;
+            }
         }
     }
 
@@ -780,6 +856,28 @@ final class FunctionDocblockManipulator
     {
         $this->normalizeThrowsDocblock = true;
         $this->removedThrowsExceptions = $exceptions;
+    }
+
+    /**
+     * @param array<string, list<string>> $replacements
+     * @param list<string> $imports
+     */
+    public function replaceThrowsDocblock(
+        array $replacements,
+        array $imports,
+        ProjectAnalyzer $project_analyzer,
+    ): void {
+        $this->normalizeThrowsDocblock = true;
+
+        foreach ($replacements as $exception => $replacement_exceptions) {
+            $this->replacedThrowsExceptions[strtolower($exception)] = $replacement_exceptions;
+        }
+
+        $this->throwsImports = array_values(array_unique(array_merge($this->throwsImports, $imports)));
+
+        if ($imports !== []) {
+            $this->initializeThrowsImportPosition($project_analyzer);
+        }
     }
 
     private function initializeThrowsImportPosition(ProjectAnalyzer $project_analyzer): void

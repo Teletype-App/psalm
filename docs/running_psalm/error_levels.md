@@ -342,6 +342,7 @@ These issues are only reported when their corresponding feature is enabled (e.g.
 
  - [LiteralKeyUnshapedArray](issues/LiteralKeyUnshapedArray.md)
  - [MissingOverrideAttribute](issues/MissingOverrideAttribute.md)
+ - [OverlyBroadThrowsDocblock](issues/OverlyBroadThrowsDocblock.md)
  - [PossiblyUndefinedIntArrayOffset](issues/PossiblyUndefinedIntArrayOffset.md)
  - [PossiblyUndefinedStringArrayOffset](issues/PossiblyUndefinedStringArrayOffset.md)
  - [PossiblyUnusedMethod](issues/PossiblyUnusedMethod.md)

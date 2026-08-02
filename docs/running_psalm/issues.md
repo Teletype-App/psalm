@@ -173,6 +173,7 @@
  - [NullPropertyAssignment](issues/NullPropertyAssignment.md)
  - [NullPropertyFetch](issues/NullPropertyFetch.md)
  - [NullReference](issues/NullReference.md)
+ - [OverlyBroadThrowsDocblock](issues/OverlyBroadThrowsDocblock.md)
  - [OverriddenFinalConstant](issues/OverriddenFinalConstant.md)
  - [OverriddenInterfaceConstant](issues/OverriddenInterfaceConstant.md)
  - [OverriddenMethodAccess](issues/OverriddenMethodAccess.md)

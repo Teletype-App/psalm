@@ -30,7 +30,7 @@ Updating code is inherently risky, doing so automatically is even more so. I've 
 Psalter can report unused variables and parameters during the same analysis pass that applies fixes:
 
 ```bash
-vendor/bin/psalter --issues=MissingThrowsDocblock --find-unused-variables src/Service.php
+vendor/bin/psalter --issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock --find-unused-variables src/Service.php
 ```
 
 Issues selected by `--issues` are fixed and omitted from the report. Remaining issues, including unused variables and parameters, are reported normally and produce a non-zero exit code.
