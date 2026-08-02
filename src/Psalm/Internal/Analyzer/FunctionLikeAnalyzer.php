@@ -55,6 +55,7 @@ use Psalm\Issue\UnresolvableConstant;
 use Psalm\Issue\UnusedClosureParam;
 use Psalm\Issue\UnusedDocblockParam;
 use Psalm\Issue\UnusedParam;
+use Psalm\Issue\UnusedThrowsDocblock;
 use Psalm\IssueBuffer;
 use Psalm\Node\Expr\VirtualVariable;
 use Psalm\Node\Stmt\VirtualWhile;
@@ -814,8 +815,9 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             $this->function->getDocComment(),
         );
         $documented_throws = $storage->throws + $documented_throws_analysis['documented_throws'];
+        $uncaught_throws = $statements_analyzer->getUncaughtThrows($context);
         $missingThrowsDocblockExceptions = [];
-        foreach ($statements_analyzer->getUncaughtThrows($context) as $possibly_thrown_exception => $codelocations) {
+        foreach ($uncaught_throws as $possibly_thrown_exception => $codelocations) {
             if (!ThrowsDocblockImportResolver::isValidClassLikeName($possibly_thrown_exception)) {
                 continue;
             }
@@ -823,15 +825,12 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             $is_expected = false;
 
             foreach ($documented_throws as $expected_exception => $_) {
-                if (strtolower($expected_exception) === strtolower($possibly_thrown_exception)
-                    || (
-                        $codebase->classOrInterfaceExists($possibly_thrown_exception, null, $context)
-                        && (
-                            $codebase->interfaceExtends($possibly_thrown_exception, $expected_exception)
-                            || $codebase->classExtendsOrImplements($possibly_thrown_exception, $expected_exception)
-                        )
-                    )
-                ) {
+                if (self::isExceptionDocumented(
+                    $codebase,
+                    $context,
+                    $possibly_thrown_exception,
+                    $expected_exception,
+                )) {
                     $is_expected = true;
                     break;
                 }
@@ -850,6 +849,47 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                             $possibly_thrown_exception,
                         ),
                     );
+                }
+            }
+        }
+
+        $unusedThrowsDocblockExceptions = [];
+        if ($codebase->config->check_for_throws_docblock
+            && !($this->function instanceof ClassMethod && $this->function->stmts === null)
+        ) {
+            foreach ($documented_throws_analysis['documented_throws'] as $documented_exception => $_) {
+                $is_thrown = false;
+                foreach ($uncaught_throws as $possibly_thrown_exception => $_) {
+                    if (self::isExceptionDocumented(
+                        $codebase,
+                        $context,
+                        $possibly_thrown_exception,
+                        $documented_exception,
+                    )) {
+                        $is_thrown = true;
+                        break;
+                    }
+                }
+
+                if ($is_thrown || !isset($storage->throw_locations[$documented_exception])) {
+                    continue;
+                }
+
+                if (!IssueBuffer::accepts(
+                    new UnusedThrowsDocblock(
+                        $documented_exception . ' is documented in @throws but is not found among inferred'
+                            . ' uncaught exceptions',
+                        $storage->throw_locations[$documented_exception],
+                        $documented_exception,
+                    ),
+                    $storage->suppressed_issues,
+                    true,
+                )) {
+                    continue;
+                }
+
+                foreach ($documented_throws_analysis['documented_throw_names'][$documented_exception] as $throw_name) {
+                    $unusedThrowsDocblockExceptions[] = $throw_name;
                 }
             }
         }
@@ -879,6 +919,19 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $missingThrowsDocblockImports,
                 $project_analyzer,
             );
+        }
+
+        if ($unusedThrowsDocblockExceptions !== []
+            && $codebase->alter_code
+            && isset($project_analyzer->getIssuesToFix()['UnusedThrowsDocblock'])
+            && !$this->function instanceof VirtualNode
+        ) {
+            $manipulator = FunctionDocblockManipulator::getForFunction(
+                $project_analyzer,
+                $this->source->getFilePath(),
+                $this->function,
+            );
+            $manipulator->removeThrowsDocblock($unusedThrowsDocblockExceptions);
         }
 
         if ($codebase->taint_flow_graph
@@ -2334,6 +2387,25 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         }
 
         return $unused_params;
+    }
+
+    /**
+     * @psalm-external-mutation-free
+     */
+    private static function isExceptionDocumented(
+        Codebase $codebase,
+        Context $context,
+        string $possibly_thrown_exception,
+        string $documented_exception,
+    ): bool {
+        return strtolower($documented_exception) === strtolower($possibly_thrown_exception)
+            || (
+                $codebase->classOrInterfaceExists($possibly_thrown_exception, null, $context)
+                && (
+                    $codebase->interfaceExtends($possibly_thrown_exception, $documented_exception)
+                    || $codebase->classExtendsOrImplements($possibly_thrown_exception, $documented_exception)
+                )
+            );
     }
 
     /**

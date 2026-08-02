@@ -1360,6 +1360,7 @@ final class PreloaderList {
         \Psalm\Issue\UnusedProperty::class,
         \Psalm\Issue\UnusedPsalmSuppress::class,
         \Psalm\Issue\UnusedReturnValue::class,
+        \Psalm\Issue\UnusedThrowsDocblock::class,
         \Psalm\Issue\UnusedVariable::class,
         \Psalm\Issue\VariableIssue::class,
         \Psalm\NodeTypeProvider::class,

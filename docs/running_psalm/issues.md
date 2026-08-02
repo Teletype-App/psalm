@@ -318,4 +318,5 @@
  - [UnusedProperty](issues/UnusedProperty.md)
  - [UnusedPsalmSuppress](issues/UnusedPsalmSuppress.md)
  - [UnusedReturnValue](issues/UnusedReturnValue.md)
+ - [UnusedThrowsDocblock](issues/UnusedThrowsDocblock.md)
  - [UnusedVariable](issues/UnusedVariable.md)

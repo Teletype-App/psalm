@@ -303,6 +303,7 @@ final class DocumentationTest extends TestCase
                 case 'UncaughtThrowInGlobalScope':
                 case UnusedBaselineEntry::getIssueType():
                 case UnusedIssueHandlerSuppression::getIssueType():
+                case 'UnusedThrowsDocblock':
                     continue 2;
 
                 /** @todo reinstate this test when the issue is restored */

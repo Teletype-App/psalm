@@ -18,6 +18,92 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
     public function providerValidCodeParse(): array
     {
         return [
+            'removeUnusedThrowsAnnotation' => [
+                'input' => '<?php
+                    /**
+                     * @throws RuntimeException
+                     */
+                    function foo(): void {}',
+                'output' => '<?php
+                    function foo(): void {}',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['UnusedThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'removeUnusedExceptionFromThrowsUnion' => [
+                'input' => '<?php
+                    /**
+                     * @throws InvalidArgumentException|DomainException when the value is invalid
+                     */
+                    function foo(): void {
+                        throw new DomainException();
+                    }',
+                'output' => '<?php
+                    /**
+                     * @throws DomainException when the value is invalid
+                     */
+                    function foo(): void {
+                        throw new DomainException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['UnusedThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'replaceUnusedThrowsAnnotationInSinglePass' => [
+                'input' => '<?php
+                    /**
+                     * @throws DomainException
+                     */
+                    function foo(): void {
+                        throw new InvalidArgumentException();
+                    }',
+                'output' => '<?php
+                    /**
+                     * @throws InvalidArgumentException
+                     */
+                    function foo(): void {
+                        throw new InvalidArgumentException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock', 'UnusedThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'preserveThrowsAnnotationOnAbstractMethod' => [
+                'input' => '<?php
+                    abstract class Foo {
+                        /**
+                         * @throws RuntimeException
+                         */
+                        abstract public function foo(): void;
+                    }',
+                'output' => '<?php
+                    abstract class Foo {
+                        /**
+                         * @throws RuntimeException
+                         */
+                        abstract public function foo(): void;
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['UnusedThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'preserveSuppressedUnusedThrowsAnnotation' => [
+                'input' => '<?php
+                    /**
+                     * @throws RuntimeException
+                     * @psalm-suppress UnusedThrowsDocblock
+                     */
+                    function foo(): void {}',
+                'output' => '<?php
+                    /**
+                     * @throws RuntimeException
+                     * @psalm-suppress UnusedThrowsDocblock
+                     */
+                    function foo(): void {}',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['UnusedThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'addThrowsAnnotationToFunction' => [
                 'input' => '<?php
                     function foo(string $s): string {

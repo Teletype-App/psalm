@@ -133,6 +133,77 @@ final class ThrowsAnnotationTest extends TestCase
         $this->analyzeFile('somefile.php', $context);
     }
 
+    public function testUnusedThrowsDocblock(): void
+    {
+        $this->expectExceptionMessage('UnusedThrowsDocblock');
+        $this->expectException(CodeException::class);
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /**
+                 * @throws RuntimeException
+                 */
+                function foo(): void {}',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testDoesNotReportUnusedThrowsDocblockForAbstractMethod(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                abstract class Foo {
+                    /**
+                     * @throws RuntimeException
+                     */
+                    abstract public function foo(): void;
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testDoesNotReportThrowsDocblockPropagatedFromTraitMethod(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                trait FooTrait {
+                    /** @throws RuntimeException */
+                    public function inner(bool $fail): void {
+                        if ($fail) {
+                            throw new RuntimeException();
+                        }
+                    }
+                }
+
+                class Foo {
+                    use FooTrait;
+
+                    /** @throws RuntimeException */
+                    public function outer(bool $fail): void {
+                        $this->inner($fail);
+                    }
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
     public function testDocumentedParentThrow(): void
     {
         Config::getInstance()->check_for_throws_docblock = true;
@@ -274,6 +345,7 @@ final class ThrowsAnnotationTest extends TestCase
                     /**
                      * @throws \TypeError
                      * @psalm-pure
+                     * @psalm-suppress UnusedThrowsDocblock
                      */
                     public static function notReallyThrowing(int $a): string
                     {
@@ -562,6 +634,7 @@ final class ThrowsAnnotationTest extends TestCase
                      * {@inheritdoc}
                      * @throws \OutOfBoundsException
                      * @psalm-mutation-free
+                     * @psalm-suppress UnusedThrowsDocblock
                      */
                     public function test(): void
                     {
@@ -723,6 +796,7 @@ final class ThrowsAnnotationTest extends TestCase
                     /**
                      * @throws TestExceptionInterface
                      * @psalm-mutation-free
+                     * @psalm-suppress UnusedThrowsDocblock
                      */
                     private function methodTwo(): void {}
                 }

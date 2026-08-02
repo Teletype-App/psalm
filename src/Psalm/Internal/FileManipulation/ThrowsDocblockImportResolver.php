@@ -31,6 +31,9 @@ use const SORT_NATURAL;
  */
 final class ThrowsDocblockImportResolver
 {
+    /**
+     * @psalm-pure
+     */
     public static function isValidClassLikeName(string $class_name): bool
     {
         return preg_match(
@@ -41,7 +44,8 @@ final class ThrowsDocblockImportResolver
 
     /**
      * @return array{
-     *     documented_throws: array<non-empty-string, true>,
+     *     documented_throws: array<string, true>,
+     *     documented_throw_names: array<string, non-empty-list<non-empty-string>>,
      *     has_duplicates: bool,
      * }
      */
@@ -50,12 +54,14 @@ final class ThrowsDocblockImportResolver
         if ($doc_comment === null) {
             return [
                 'documented_throws' => [],
+                'documented_throw_names' => [],
                 'has_duplicates' => false,
             ];
         }
 
         $parsed_docblock = DocComment::parsePreservingLength($doc_comment, true);
         $documented_throws = [];
+        $documented_throw_names = [];
         $throws_clauses = [];
         $has_duplicates = false;
 
@@ -85,11 +91,13 @@ final class ThrowsDocblockImportResolver
                     ? $throw_class
                     : Type::getFQCLNFromString($throw_class, $source->getAliases());
                 $documented_throws[$exception_fqcln] = true;
+                $documented_throw_names[$exception_fqcln][] = $throw_class;
             }
         }
 
         return [
             'documented_throws' => $documented_throws,
+            'documented_throw_names' => $documented_throw_names,
             'has_duplicates' => $has_duplicates,
         ];
     }

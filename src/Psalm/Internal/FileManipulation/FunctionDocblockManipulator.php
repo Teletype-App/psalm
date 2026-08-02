@@ -22,6 +22,7 @@ use function array_reduce;
 use function array_slice;
 use function array_values;
 use function count;
+use function explode;
 use function implode;
 use function is_string;
 use function ltrim;
@@ -36,6 +37,7 @@ use function strpos;
 use function strrpos;
 use function strtolower;
 use function substr;
+use function trim;
 
 /**
  * @internal
@@ -96,6 +98,9 @@ final class FunctionDocblockManipulator
 
     /** @var list<string> */
     private array $throwsImports = [];
+
+    /** @var list<string> */
+    private array $removedThrowsExceptions = [];
 
     private bool $normalizeThrowsDocblock = false;
 
@@ -439,6 +444,45 @@ final class FunctionDocblockManipulator
                 Mutations::TO_ATTRIBUTE_FUNCTIONLIKE[$this->allowed_mutations]
             ] = [''];
         }
+        if ($this->removedThrowsExceptions !== [] && isset($parsed_docblock->tags['throws'])) {
+            $removed_throws_exceptions = [];
+            foreach ($this->removedThrowsExceptions as $exception) {
+                $removed_throws_exceptions[strtolower($exception)] = true;
+            }
+
+            $throws_tags = [];
+            foreach ($parsed_docblock->tags['throws'] as $throws_tag) {
+                $throws_parts = preg_split('/[\s]+/', $throws_tag, 2);
+                if ($throws_parts === false || $throws_parts[0] === '') {
+                    $throws_tags[] = $throws_tag;
+                    continue;
+                }
+
+                $remaining_exceptions = [];
+                foreach (explode('|', $throws_parts[0]) as $exception) {
+                    $exception = trim($exception);
+                    if ($exception !== '' && !isset($removed_throws_exceptions[strtolower($exception)])) {
+                        $remaining_exceptions[] = $exception;
+                    }
+                }
+
+                if (count($remaining_exceptions) === count(explode('|', $throws_parts[0]))) {
+                    $throws_tags[] = $throws_tag;
+                    continue;
+                }
+
+                $modified_docblock = true;
+                if ($remaining_exceptions === []) {
+                    continue;
+                }
+
+                $throws_tags[] = implode('|', $remaining_exceptions)
+                    . (isset($throws_parts[1]) ? ' ' . $throws_parts[1] : '');
+            }
+
+            $parsed_docblock->tags['throws'] = $throws_tags;
+        }
+
         if (count($this->throwsExceptions) > 0) {
             $modified_docblock = true;
             $inferredThrowsClause = array_reduce(
@@ -726,6 +770,16 @@ final class FunctionDocblockManipulator
         if ($imports !== []) {
             $this->initializeThrowsImportPosition($project_analyzer);
         }
+    }
+
+    /**
+     * @param list<string> $exceptions
+     * @psalm-external-mutation-free
+     */
+    public function removeThrowsDocblock(array $exceptions): void
+    {
+        $this->normalizeThrowsDocblock = true;
+        $this->removedThrowsExceptions = $exceptions;
     }
 
     private function initializeThrowsImportPosition(ProjectAnalyzer $project_analyzer): void
