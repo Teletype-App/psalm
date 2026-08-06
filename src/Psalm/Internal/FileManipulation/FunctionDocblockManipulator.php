@@ -280,6 +280,11 @@ final class FunctionDocblockManipulator
             }
         }
 
+        if ($stmt->returnType !== null) {
+            $this->return_typehint_start = (int) $stmt->returnType->getAttribute('startFilePos');
+            $this->return_typehint_end = (int) $stmt->returnType->getAttribute('endFilePos') + 1;
+        }
+
         $preceding_newline_pos = strrpos($file_contents, "\n", $this->docblock_end - strlen($file_contents));
 
         if ($preceding_newline_pos === false) {

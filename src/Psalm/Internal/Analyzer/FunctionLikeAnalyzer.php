@@ -1830,11 +1830,13 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $this->source->getAliasedClassesFlipped(),
                 $this->source->getFQCLN(),
                 false,
+                true,
             ),
             $inferred_return_type->toNamespacedString(
                 $this->source->getNamespace(),
                 $this->source->getAliasedClassesFlipped(),
                 $this->source->getFQCLN(),
+                true,
                 true,
             ),
         );

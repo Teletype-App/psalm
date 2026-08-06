@@ -1687,11 +1687,13 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
                 $source->getAliasedClassesFlipped(),
                 $source->getFQCLN(),
                 false,
+                true,
             ),
             $inferred_type->toNamespacedString(
                 $source->getNamespace(),
                 $source->getAliasedClassesFlipped(),
                 $source->getFQCLN(),
+                true,
                 true,
             ),
             $inferred_type->canBeFullyExpressedInPhp($codebase->analysis_php_version_id),
