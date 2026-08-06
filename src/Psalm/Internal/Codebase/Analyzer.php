@@ -12,6 +12,7 @@ use Psalm\Codebase;
 use Psalm\Config;
 use Psalm\FileManipulation;
 use Psalm\Internal\Analyzer\FileAnalyzer;
+use Psalm\Internal\Analyzer\InferredThrowsBuffer;
 use Psalm\Internal\Analyzer\IssueData;
 use Psalm\Internal\Analyzer\ProjectAnalyzer;
 use Psalm\Internal\FileManipulation\ClassDocblockManipulator;
@@ -22,6 +23,8 @@ use Psalm\Internal\Fork\AnalyzerTask;
 use Psalm\Internal\Fork\InitAnalyzerTask;
 use Psalm\Internal\Fork\Pool;
 use Psalm\Internal\Fork\ShutdownAnalyzerTask;
+use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileProvider;
 use Psalm\Internal\Provider\FileStorageProvider;
 use Psalm\Internal\Provider\StatementsProvider;
@@ -39,6 +42,7 @@ use function Amp\Future\await;
 use function array_filter;
 use function array_intersect_key;
 use function array_key_exists;
+use function array_keys;
 use function array_merge;
 use function array_values;
 use function count;
@@ -98,6 +102,7 @@ use const PHP_INT_MAX;
  *      unused_suppressions: array<string, array<int, int>>,
  *      used_suppressions: array<string, array<int, bool>>,
  *      function_docblock_manipulators: array<string, array<int, FunctionDocblockManipulator>>,
+ *      inferred_throws: array<lowercase-string, array<string, true>>,
  *      mutable_classes: array<string, Mutations::LEVEL_*>,
  *      issue_handlers: array{type: string, index: int, count: int}[],
  * }
@@ -256,7 +261,16 @@ final class Analyzer
             $this->file_provider->fileExists(...),
         );
 
+        self::resetInferredThrows();
+        InferredThrowsBuffer::clear();
         $this->doAnalysis($project_analyzer, $pool_size);
+
+        if ($alter_code
+            && $codebase->config->check_for_throws_docblock
+            && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
+        ) {
+            $this->convergeInferredThrows($project_analyzer, $pool_size);
+        }
 
         $scanned_files = $codebase->scanner->getScannedFiles();
 
@@ -305,6 +319,21 @@ final class Analyzer
             }
 
             $project_analyzer->migrateCode();
+        }
+    }
+
+    private static function resetInferredThrows(): void
+    {
+        foreach (ClassLikeStorageProvider::getAll() as $classlike_storage) {
+            foreach ($classlike_storage->methods as $method_storage) {
+                $method_storage->inferred_throws = [];
+            }
+        }
+
+        foreach (FileStorageProvider::getAll() as $file_storage) {
+            foreach ($file_storage->functions as $function_storage) {
+                $function_storage->inferred_throws = [];
+            }
         }
     }
 
@@ -419,6 +448,7 @@ final class Analyzer
                 }
 
                 FunctionDocblockManipulator::addManipulators($pool_data['function_docblock_manipulators']);
+                InferredThrowsBuffer::add($pool_data['inferred_throws']);
 
                 $this->analyzed_methods = array_merge($pool_data['analyzed_methods'], $this->analyzed_methods);
 
@@ -463,6 +493,68 @@ final class Analyzer
             foreach ($this->files_to_analyze as $file_path => $_) {
                 $task_done_closure(self::analysisWorker($this->config, $this->progress, $file_path));
             }
+        }
+    }
+
+    private function convergeInferredThrows(ProjectAnalyzer $project_analyzer, int $pool_size): void
+    {
+        $codebase = $project_analyzer->getCodebase();
+        $references = $codebase->file_reference_provider->getAllMethodReferencesToClassMembers();
+        $summaries = InferredThrowsBuffer::getAll();
+
+        while ($summaries !== []) {
+            $files_to_reanalyze = [];
+
+            foreach (array_keys($summaries) as $function_id) {
+                if (!MethodIdentifier::isValidMethodIdReference($function_id)) {
+                    continue;
+                }
+
+                try {
+                    $storage = $codebase->methods->getStorage(MethodIdentifier::fromMethodIdReference($function_id));
+                } catch (UnexpectedValueException) {
+                    continue;
+                }
+
+                $new_throws = $summaries[$function_id] + $storage->inferred_throws;
+                if ($new_throws === $storage->inferred_throws) {
+                    continue;
+                }
+
+                $storage->inferred_throws = $new_throws;
+
+                foreach ($references[$function_id] ?? [] as $caller_id => $_) {
+                    if (!MethodIdentifier::isValidMethodIdReference($caller_id)) {
+                        continue;
+                    }
+
+                    try {
+                        $caller_storage = $codebase->methods->getStorage(
+                            MethodIdentifier::fromMethodIdReference($caller_id),
+                        );
+                    } catch (UnexpectedValueException) {
+                        continue;
+                    }
+
+                    if ($caller_storage->location !== null) {
+                        $file_path = $caller_storage->location->file_path;
+                        if (isset($this->files_to_analyze[$file_path])) {
+                            $files_to_reanalyze[$file_path] = $file_path;
+                        }
+                    }
+                }
+            }
+
+            if ($files_to_reanalyze === []) {
+                break;
+            }
+
+            InferredThrowsBuffer::clear();
+            $files_to_analyze = $this->files_to_analyze;
+            $this->files_to_analyze = $files_to_reanalyze;
+            $this->doAnalysis($project_analyzer, $pool_size);
+            $this->files_to_analyze = $files_to_analyze;
+            $summaries = InferredThrowsBuffer::getAll();
         }
     }
 

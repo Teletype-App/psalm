@@ -80,6 +80,7 @@ use UnexpectedValueException;
 
 use function array_combine;
 use function array_diff_key;
+use function array_fill_keys;
 use function array_key_exists;
 use function array_keys;
 use function array_merge;
@@ -818,6 +819,17 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         );
         $documented_throws = $storage->throws + $documented_throws_analysis['documented_throws'];
         $uncaught_throws = $statements_analyzer->getUncaughtThrows($context);
+        if ($codebase->alter_code
+            && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
+            && !$context->collect_initializations
+            && !$context->collect_mutations
+            && !$this instanceof ClosureAnalyzer
+        ) {
+            InferredThrowsBuffer::set(
+                $this->getId(),
+                array_fill_keys(array_keys($uncaught_throws), true),
+            );
+        }
         $missingThrowsDocblockExceptions = [];
         if (!$context->collect_initializations && !$context->collect_mutations) {
             foreach ($uncaught_throws as $possibly_thrown_exception => $codelocations) {

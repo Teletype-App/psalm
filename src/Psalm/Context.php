@@ -892,7 +892,7 @@ final class Context
         CodeLocation $codelocation,
     ): void {
         $hash = $codelocation->getHash();
-        foreach ($function_storage->throws as $possibly_thrown_exception => $_) {
+        foreach ($function_storage->throws + $function_storage->inferred_throws as $possibly_thrown_exception => $_) {
             $this->possibly_thrown_exceptions[$possibly_thrown_exception][$hash] = $codelocation;
         }
     }

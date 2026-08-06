@@ -8,6 +8,7 @@ use Amp\Cancellation;
 use Amp\Parallel\Worker\Task;
 use Amp\Sync\Channel;
 use Override;
+use Psalm\Internal\Analyzer\InferredThrowsBuffer;
 use Psalm\Internal\Analyzer\ProjectAnalyzer;
 use Psalm\Internal\Codebase\Analyzer;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
@@ -64,6 +65,7 @@ final class ShutdownAnalyzerTask implements Task
             'unused_suppressions'                        => $codebase->track_unused_suppressions ? IssueBuffer::getUnusedSuppressions() : [],
             'used_suppressions'                          => $codebase->track_unused_suppressions ? IssueBuffer::getUsedSuppressions() : [],
             'function_docblock_manipulators'             => FunctionDocblockManipulator::getManipulators(),
+            'inferred_throws'                            => InferredThrowsBuffer::getAll(),
             'mutable_classes'                            => $codebase->analyzer->mutable_classes,
             'issue_handlers'                             => $codebase->config->getIssueHandlerSuppressions()
         ];

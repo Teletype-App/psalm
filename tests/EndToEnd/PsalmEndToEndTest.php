@@ -9,6 +9,7 @@ use Override;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
 
+use function array_keys;
 use function assert;
 use function closedir;
 use function copy;
@@ -303,6 +304,101 @@ final class PsalmEndToEndTest extends TestCase
 
         $this->runPsalm($arguments, self::$tmpDir);
         $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+    }
+
+    public function testPsalterPropagatesThrowsToAllCallersInOneRun(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $files = [
+            'A.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class A
+                {
+                    public function execute(B $b): void
+                    {
+                        $b->execute();
+                    }
+                }
+                PHP,
+            'B.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class B
+                {
+                    public function execute(C $c): void
+                    {
+                        $c->execute();
+                    }
+                }
+                PHP,
+            'C.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class C
+                {
+                    public function execute(): void
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+                PHP,
+        ];
+
+        foreach ($files as $filename => $contents) {
+            file_put_contents(self::$tmpDir . '/src/' . $filename, $contents);
+        }
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock',
+            self::$tmpDir . '/src/A.php',
+            self::$tmpDir . '/src/B.php',
+            self::$tmpDir . '/src/C.php',
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+
+        foreach (array_keys($files) as $filename) {
+            $contents = (string) file_get_contents(self::$tmpDir . '/src/' . $filename);
+            $this->assertStringContainsString(
+                '@throws RuntimeException',
+                $contents,
+            );
+        }
+
+        $contentsAfterFirstRun = [];
+        foreach (array_keys($files) as $filename) {
+            $contentsAfterFirstRun[$filename] = file_get_contents(self::$tmpDir . '/src/' . $filename);
+        }
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+
+        foreach ($contentsAfterFirstRun as $filename => $contents) {
+            $this->assertSame($contents, file_get_contents(self::$tmpDir . '/src/' . $filename));
+        }
     }
 
     public function testPsalm(): void
