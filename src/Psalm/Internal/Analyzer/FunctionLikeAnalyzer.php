@@ -819,38 +819,40 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         $documented_throws = $storage->throws + $documented_throws_analysis['documented_throws'];
         $uncaught_throws = $statements_analyzer->getUncaughtThrows($context);
         $missingThrowsDocblockExceptions = [];
-        foreach ($uncaught_throws as $possibly_thrown_exception => $codelocations) {
-            if (!ThrowsDocblockImportResolver::isValidClassLikeName($possibly_thrown_exception)) {
-                continue;
-            }
-
-            $is_expected = false;
-
-            foreach ($documented_throws as $expected_exception => $_) {
-                if (self::isExceptionDocumented(
-                    $codebase,
-                    $context,
-                    $possibly_thrown_exception,
-                    $expected_exception,
-                )) {
-                    $is_expected = true;
-                    break;
+        if (!$context->collect_initializations && !$context->collect_mutations) {
+            foreach ($uncaught_throws as $possibly_thrown_exception => $codelocations) {
+                if (!ThrowsDocblockImportResolver::isValidClassLikeName($possibly_thrown_exception)) {
+                    continue;
                 }
-            }
 
-            if (!$is_expected) {
-                $missingThrowsDocblockExceptions[] = new TNamedObject($possibly_thrown_exception);
+                $is_expected = false;
 
-                foreach ($codelocations as $codelocation) {
-                    // issues are suppressed in ThrowAnalyzer, CallAnalyzer, etc.
-                    IssueBuffer::maybeAdd(
-                        new MissingThrowsDocblock(
-                            $possibly_thrown_exception . ' is thrown but not caught - please either catch'
-                                . ' or add a @throws annotation',
-                            $codelocation,
-                            $possibly_thrown_exception,
-                        ),
-                    );
+                foreach ($documented_throws as $expected_exception => $_) {
+                    if (self::isExceptionDocumented(
+                        $codebase,
+                        $context,
+                        $possibly_thrown_exception,
+                        $expected_exception,
+                    )) {
+                        $is_expected = true;
+                        break;
+                    }
+                }
+
+                if (!$is_expected) {
+                    $missingThrowsDocblockExceptions[] = new TNamedObject($possibly_thrown_exception);
+
+                    foreach ($codelocations as $codelocation) {
+                        // issues are suppressed in ThrowAnalyzer, CallAnalyzer, etc.
+                        IssueBuffer::maybeAdd(
+                            new MissingThrowsDocblock(
+                                $possibly_thrown_exception . ' is thrown but not caught - please either catch'
+                                    . ' or add a @throws annotation',
+                                $codelocation,
+                                $possibly_thrown_exception,
+                            ),
+                        );
+                    }
                 }
             }
         }
@@ -858,7 +860,9 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         $unusedThrowsDocblockExceptions = [];
         $overlyBroadThrowsDocblockReplacements = [];
         $overlyBroadThrowsDocblockImports = [];
-        if ($codebase->config->check_for_throws_docblock
+        if (!$context->collect_initializations
+            && !$context->collect_mutations
+            && $codebase->config->check_for_throws_docblock
             && !($this->function instanceof ClassMethod && $this->function->stmts === null)
         ) {
             foreach ($documented_throws_analysis['documented_throws'] as $documented_exception => $_) {

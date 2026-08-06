@@ -239,6 +239,72 @@ final class PsalmEndToEndTest extends TestCase
         );
     }
 
+    public function testPsalterKeepsThrowsStableDuringInitializationAnalysis(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+        file_put_contents(
+            self::$tmpDir . '/src/BaseModel.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class BaseModel
+                {
+                    /** @throws RuntimeException */
+                    protected function computeRelatedParams(): void
+                    {
+                    }
+                }
+                PHP,
+        );
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        $selectedFileContents = <<<'PHP'
+            <?php
+
+            namespace Foo;
+
+            use RuntimeException;
+
+            class SelectedFile extends BaseModel
+            {
+                private string $value;
+
+                /** @throws RuntimeException */
+                public function __construct()
+                {
+                    $this->value = '';
+                    $this->computeRelatedParams();
+                }
+            }
+            PHP;
+        file_put_contents($selectedFile, $selectedFileContents);
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+    }
+
     public function testPsalm(): void
     {
         $this->runPsalmInit(1);
