@@ -306,6 +306,100 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
     }
 
+    public function testPsalterKeepsParentThrowsInheritedByTraitMethod(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        file_put_contents(
+            self::$tmpDir . '/src/BaseModel.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class DatabaseException extends RuntimeException {}
+
+                class BaseModel
+                {
+                    /** @throws DatabaseException */
+                    public function save(): void
+                    {
+                        throw new DatabaseException();
+                    }
+                }
+                PHP,
+        );
+        file_put_contents(
+            self::$tmpDir . '/src/SaveTrait.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class HttpException extends RuntimeException {}
+
+                trait SaveTrait
+                {
+                    /**
+                     * @inheritDoc
+                     * @throws HttpException
+                     */
+                    public function save(): void
+                    {
+                        parent::save();
+                        throw new HttpException();
+                    }
+                }
+                PHP,
+        );
+
+        $selectedFile = self::$tmpDir . '/src/ManagerJob.php';
+        $selectedFileContents = <<<'PHP'
+            <?php
+
+            namespace Foo;
+
+            class ManagerJob extends BaseModel
+            {
+                use SaveTrait;
+
+                /**
+                 * @throws DatabaseException
+                 * @throws HttpException
+                 */
+                public function fail(): void
+                {
+                    $this->save();
+                }
+            }
+            PHP;
+        file_put_contents($selectedFile, $selectedFileContents);
+
+        $this->runPsalm(
+            [
+                '--alter',
+                '--php-version=8.3',
+                '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+                $selectedFile,
+            ],
+            self::$tmpDir,
+        );
+
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+    }
+
     public function testPsalterPropagatesThrowsToAllCallersInOneRun(): void
     {
         $this->runPsalmInit();

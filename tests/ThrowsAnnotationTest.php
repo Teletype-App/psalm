@@ -338,6 +338,53 @@ final class ThrowsAnnotationTest extends TestCase
         $this->analyzeFile('somefile.php', $context);
     }
 
+    public function testPropagatesInheritedThrowsThroughOverridingTraitMethod(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                class DatabaseException extends Exception {}
+                class HttpException extends Exception {}
+
+                class ActiveRecord {
+                    /** @throws DatabaseException */
+                    public function save(): void {
+                        throw new DatabaseException();
+                    }
+                }
+
+                trait SaveTrait {
+                    /**
+                     * @inheritDoc
+                     * @throws HttpException
+                     */
+                    public function save(): void {
+                        /** @psalm-suppress MissingThrowsDocblock */
+                        parent::save();
+                        throw new HttpException();
+                    }
+                }
+
+                class ManagerJob extends ActiveRecord {
+                    use SaveTrait;
+
+                    /**
+                     * @throws DatabaseException
+                     * @throws HttpException
+                     */
+                    public function fail(): void {
+                        $this->save();
+                    }
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
     public function testDocumentedParentThrow(): void
     {
         Config::getInstance()->check_for_throws_docblock = true;

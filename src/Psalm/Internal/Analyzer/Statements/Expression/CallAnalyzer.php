@@ -328,6 +328,15 @@ abstract class CallAnalyzer
 
             if (!$context->isSuppressingExceptions($statements_analyzer)) {
                 $context->mergeFunctionExceptions($method_storage, $code_location);
+
+                if ($declaring_class_storage->is_trait && $method_storage->inheritdoc) {
+                    foreach ($codebase->methods->getOverriddenMethodIds($method_id) as $overridden_method_id) {
+                        $context->mergeFunctionExceptions(
+                            $codebase->methods->getStorage($overridden_method_id),
+                            $code_location,
+                        );
+                    }
+                }
             }
         }
 
