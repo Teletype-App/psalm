@@ -265,11 +265,17 @@ final class Analyzer
         InferredThrowsBuffer::clear();
         $this->doAnalysis($project_analyzer, $pool_size);
 
-        if ($alter_code
-            && $codebase->config->check_for_throws_docblock
-            && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
+        if ($codebase->config->check_for_throws_docblock
+            && (!$alter_code
+                || isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock']))
         ) {
             $this->convergeInferredThrows($project_analyzer, $pool_size);
+
+            if (!$alter_code) {
+                IssueBuffer::clearCache();
+                InferredThrowsBuffer::clear();
+                $this->doAnalysis($project_analyzer, $pool_size);
+            }
         }
 
         $scanned_files = $codebase->scanner->getScannedFiles();

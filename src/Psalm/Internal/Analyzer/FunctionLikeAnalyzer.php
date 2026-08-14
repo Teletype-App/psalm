@@ -819,8 +819,9 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         );
         $documented_throws = $storage->throws + $documented_throws_analysis['documented_throws'];
         $uncaught_throws = $statements_analyzer->getUncaughtThrows($context);
-        if ($codebase->alter_code
-            && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
+        if ($codebase->config->check_for_throws_docblock
+            && (!$codebase->alter_code
+                || isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock']))
             && !$context->collect_initializations
             && !$context->collect_mutations
             && !$this instanceof ClosureAnalyzer
@@ -846,6 +847,14 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                         $possibly_thrown_exception,
                         $expected_exception,
                     )) {
+                        if (strtolower($possibly_thrown_exception) !== strtolower($expected_exception)) {
+                            foreach ($codelocations as $hash => $_) {
+                                if (isset($uncaught_throws[$expected_exception][$hash])) {
+                                    continue 2;
+                                }
+                            }
+                        }
+
                         $is_expected = true;
                         break;
                     }
@@ -1023,6 +1032,11 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         if (($missingThrowsDocblockErrors !== [] || $documented_throws_analysis['has_duplicates'])
             && $codebase->alter_code
             && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
+            && $project_analyzer->canFixFunctionLike(
+                $this->getFilePath(),
+                $this->function->getStartLine(),
+                $this->function->getEndLine(),
+            )
             && !$this->function instanceof VirtualNode
         ) {
             $manipulator = FunctionDocblockManipulator::getForFunction(
@@ -1040,6 +1054,11 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         if ($unusedThrowsDocblockExceptions !== []
             && $codebase->alter_code
             && isset($project_analyzer->getIssuesToFix()['UnusedThrowsDocblock'])
+            && $project_analyzer->canFixFunctionLike(
+                $this->getFilePath(),
+                $this->function->getStartLine(),
+                $this->function->getEndLine(),
+            )
             && !$this->function instanceof VirtualNode
         ) {
             $manipulator = FunctionDocblockManipulator::getForFunction(
@@ -1053,6 +1072,11 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         if ($overlyBroadThrowsDocblockReplacements !== []
             && $codebase->alter_code
             && isset($project_analyzer->getIssuesToFix()['OverlyBroadThrowsDocblock'])
+            && $project_analyzer->canFixFunctionLike(
+                $this->getFilePath(),
+                $this->function->getStartLine(),
+                $this->function->getEndLine(),
+            )
             && !$this->function instanceof VirtualNode
         ) {
             $manipulator = FunctionDocblockManipulator::getForFunction(

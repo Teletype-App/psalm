@@ -116,6 +116,46 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'addSpecificExceptionLostByRethrownThrowable' => [
+                'input' => '<?php
+                    interface Service {
+                        /** @throws Throwable */
+                        public function execute(): void;
+                    }
+
+                    /** @throws Throwable */
+                    function foo(Service $service): void {
+                        try {
+                            $service->execute();
+                            throw new RuntimeException();
+                        } catch (Throwable $throwable) {
+                            error_log($throwable->getMessage());
+                            throw $throwable;
+                        }
+                    }',
+                'output' => '<?php
+                    interface Service {
+                        /** @throws Throwable */
+                        public function execute(): void;
+                    }
+
+                    /**
+                     * @throws Throwable
+                     * @throws RuntimeException
+                     */
+                    function foo(Service $service): void {
+                        try {
+                            $service->execute();
+                            throw new RuntimeException();
+                        } catch (Throwable $throwable) {
+                            error_log($throwable->getMessage());
+                            throw $throwable;
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'removeBroadThrowsCoveredByNarrowerAnnotation' => [
                 'input' => '<?php
                     /**

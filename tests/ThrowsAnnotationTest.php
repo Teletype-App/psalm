@@ -203,8 +203,10 @@ final class ThrowsAnnotationTest extends TestCase
         $this->analyzeFile('somefile.php', $context);
     }
 
-    public function testDoesNotNarrowRethrownThrowable(): void
+    public function testReportsBroadRethrownThrowable(): void
     {
+        $this->expectExceptionMessage('OverlyBroadThrowsDocblock');
+        $this->expectException(CodeException::class);
         Config::getInstance()->check_for_throws_docblock = true;
         Config::getInstance()->setCustomErrorLevel('OverlyBroadThrowsDocblock', Config::REPORT_ERROR);
 
@@ -217,6 +219,84 @@ final class ThrowsAnnotationTest extends TestCase
                         throw new RuntimeException();
                     } catch (Throwable $throwable) {
                         throw $throwable;
+                    }
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testReportsSpecificExceptionLostByRethrownThrowable(): void
+    {
+        $this->expectExceptionMessage('RuntimeException is thrown but not caught');
+        $this->expectException(CodeException::class);
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                interface Service {
+                    /** @throws Throwable */
+                    public function execute(): void;
+                }
+
+                /** @throws Throwable */
+                function foo(Service $service): void {
+                    try {
+                        $service->execute();
+                        throw new RuntimeException();
+                    } catch (Throwable $throwable) {
+                        error_log($throwable->getMessage());
+                        throw $throwable;
+                    }
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testDoesNotRestoreCaughtExceptionAfterCatchVariableReassignment(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /** @throws LogicException */
+                function foo(): void {
+                    try {
+                        throw new RuntimeException();
+                    } catch (Throwable $throwable) {
+                        $throwable = new LogicException();
+                        throw $throwable;
+                    }
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testDoesNotRestoreCaughtExceptionFromNestedClosure(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                function foo(): Closure {
+                    try {
+                        throw new RuntimeException();
+                    } catch (Throwable $throwable) {
+                        /** @throws Throwable */
+                        return static function () use ($throwable): void {
+                            throw $throwable;
+                        };
                     }
                 }',
         );

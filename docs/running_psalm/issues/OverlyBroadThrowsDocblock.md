@@ -17,4 +17,4 @@ function execute(): void
 }
 ```
 
-Psalter can replace `ApplicationException` with `InvalidApplicationState`. The annotation is preserved when the implementation can throw `ApplicationException` itself. Abstract methods and inherited annotations are not changed.
+Psalter can replace `ApplicationException` with `InvalidApplicationState`. The annotation is preserved when the implementation can throw `ApplicationException` itself. If both the parent and a concrete child can escape through the same unchanged catch-variable rethrow, both exception types remain part of the contract. Abstract methods and inherited annotations are not changed.

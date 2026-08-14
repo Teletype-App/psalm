@@ -130,6 +130,9 @@ final class ProjectAnalyzer
      */
     private array $issues_to_fix = [];
 
+    /** @var array<string, list<array{int, int}>>|null */
+    private ?array $changed_lines = null;
+
     public bool $dry_run = false;
 
     public bool $full_run = false;
@@ -1188,6 +1191,31 @@ final class ProjectAnalyzer
     public function getIssuesToFix(): array
     {
         return $this->issues_to_fix;
+    }
+
+    /**
+     * @param array<string, list<array{int, int}>> $changed_lines
+     * @psalm-external-mutation-free
+     */
+    public function restrictFixesToChangedFunctions(array $changed_lines): void
+    {
+        $this->changed_lines = $changed_lines;
+    }
+
+    /** @psalm-mutation-free */
+    public function canFixFunctionLike(string $file_path, int $start_line, int $end_line): bool
+    {
+        if ($this->changed_lines === null) {
+            return true;
+        }
+
+        foreach ($this->changed_lines[$file_path] ?? [] as [$changed_start, $changed_end]) {
+            if ($changed_start <= $end_line && $changed_end >= $start_line) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function getCodebase(): Codebase

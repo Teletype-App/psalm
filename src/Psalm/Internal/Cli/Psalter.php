@@ -26,7 +26,9 @@ use Psalm\Progress\DefaultProgress;
 use Psalm\Progress\VoidProgress;
 use Psalm\Report;
 use Psalm\Report\ReportOptions;
+use RuntimeException;
 
+use function array_diff_key;
 use function array_filter;
 use function array_key_exists;
 use function array_map;
@@ -91,6 +93,8 @@ final class Psalter
         'no-cache',
         'no-progress',
         'memory-limit:',
+        'changed',
+        'base:',
     ];
 
     /** @param array<int,string> $argv */
@@ -151,6 +155,12 @@ final class Psalter
 
                 --dry-run
                     Shows a diff of all the changes, without making them
+
+                --changed
+                    Only update functions and methods touched by Git changes
+
+                --base=REF
+                    Include changes committed since the merge base with REF; requires --changed
 
                 --safe-types
                     Only update PHP types when the new type information comes from other PHP types,
@@ -317,6 +327,29 @@ final class Psalter
             $progress,
         );
 
+        if (isset($options['base']) && !array_key_exists('changed', $options)) {
+            fwrite(STDERR, '--base requires --changed' . PHP_EOL);
+            exit(1);
+        }
+
+        if (array_key_exists('changed', $options)) {
+            $base_ref = $options['base'] ?? null;
+            if ($base_ref !== null && (!is_string($base_ref) || $base_ref === '')) {
+                fwrite(STDERR, '--base expects a Git ref' . PHP_EOL);
+                exit(1);
+            }
+            assert($base_ref === null || is_string($base_ref));
+
+            try {
+                $project_analyzer->restrictFixesToChangedFunctions(
+                    GitChangedLines::collect($current_dir, $base_ref),
+                );
+            } catch (RuntimeException $e) {
+                fwrite(STDERR, $e->getMessage() . PHP_EOL);
+                exit(1);
+            }
+        }
+
         if (array_key_exists('debug-by-line', $options)) {
             $project_analyzer->debug_lines = true;
         }
@@ -340,6 +373,22 @@ final class Psalter
             }
         } else {
             $keyed_issues = [];
+        }
+
+        if (array_key_exists('changed', $options)) {
+            $changed_mode_issues = [
+                'MissingThrowsDocblock' => true,
+                'OverlyBroadThrowsDocblock' => true,
+                'UnusedThrowsDocblock' => true,
+            ];
+            $unsupported_changed_issues = array_diff_key($keyed_issues, $changed_mode_issues);
+            if ($unsupported_changed_issues !== []) {
+                fwrite(
+                    STDERR,
+                    '--changed currently supports only throws docblock issues' . PHP_EOL,
+                );
+                exit(1);
+            }
         }
 
         CliUtils::initPhpVersion($options, $config, $project_analyzer);

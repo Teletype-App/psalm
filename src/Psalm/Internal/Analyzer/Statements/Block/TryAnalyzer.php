@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Psalm\Internal\Analyzer\Statements\Block;
 
 use PhpParser;
+use PhpParser\NodeFinder;
 use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
@@ -158,6 +159,7 @@ final class TryAnalyzer
         foreach ($stmt->catches as $i => $catch) {
             $catch_context = clone $original_context;
             $catch_context->has_returned = false;
+            $caught_exceptions = [];
 
             foreach ($catch_context->vars_in_scope as $var_id => $type) {
                 if (!isset($old_context->vars_in_scope[$var_id])) {
@@ -242,6 +244,7 @@ final class TryAnalyzer
                             || ($codebase->interfaceExists($exception_fqcln, null, $context)
                                 && $codebase->interfaceExtends($exception_fqcln, $fq_catch_class))
                         ) {
+                            $caught_exceptions[$exception_fqcln] = true;
                             unset($original_context->possibly_thrown_exceptions[$exception_fqcln]);
                             unset($context->possibly_thrown_exceptions[$exception_fqcln]);
                             unset($catch_context->possibly_thrown_exceptions[$exception_fqcln]);
@@ -329,6 +332,15 @@ final class TryAnalyzer
             $catch_context->assigned_var_ids = [];
 
             $statements_analyzer->analyze($catch->stmts, $catch_context);
+
+            if ($catch->var && is_string($catch->var->name) && $caught_exceptions !== []) {
+                self::restoreRethrownExceptions(
+                    $statements_analyzer,
+                    $catch,
+                    $catch_context,
+                    $caught_exceptions,
+                );
+            }
 
             // recalculate in case there's a no-return clause
             $catch_actions[$i] = ScopeAnalyzer::getControlActions(
@@ -476,5 +488,66 @@ final class TryAnalyzer
         $context->has_returned = ($body_has_returned && $all_catches_leave) || $finally_has_returned;
 
         return null;
+    }
+
+    /**
+     * @param array<string, true> $caught_exceptions
+     */
+    private static function restoreRethrownExceptions(
+        StatementsAnalyzer $statements_analyzer,
+        PhpParser\Node\Stmt\Catch_ $catch,
+        Context $catch_context,
+        array $caught_exceptions,
+    ): void {
+        if (!$catch->var || !is_string($catch->var->name)) {
+            return;
+        }
+
+        $catch_var_name = $catch->var->name;
+        $node_finder = new NodeFinder();
+        $catch_var_is_reassigned = $node_finder->findFirst(
+            $catch->stmts,
+            static fn(PhpParser\Node $node): bool => ($node instanceof PhpParser\Node\Expr\Assign
+                    || $node instanceof PhpParser\Node\Expr\AssignRef
+                    || $node instanceof PhpParser\Node\Expr\AssignOp)
+                && $node->var instanceof PhpParser\Node\Expr\Variable
+                && $node->var->name === $catch_var_name,
+        );
+
+        if ($catch_var_is_reassigned) {
+            return;
+        }
+
+        $rethrows = $node_finder->find(
+            $catch->stmts,
+            static fn(PhpParser\Node $node): bool => $node instanceof PhpParser\Node\Expr\Throw_
+                && $node->expr instanceof PhpParser\Node\Expr\Variable
+                && $node->expr->name === $catch_var_name,
+        );
+
+        foreach ($rethrows as $rethrow) {
+            $codelocation = new CodeLocation($statements_analyzer->getFileAnalyzer(), $rethrow);
+            $hash = $codelocation->getHash();
+            $rethrow_is_recorded = false;
+
+            foreach ($catch_context->possibly_thrown_exceptions as $exception => $_) {
+                if (isset($catch_context->possibly_thrown_exceptions[$exception][$hash])) {
+                    $rethrow_is_recorded = true;
+                }
+
+                unset($catch_context->possibly_thrown_exceptions[$exception][$hash]);
+                if ($catch_context->possibly_thrown_exceptions[$exception] === []) {
+                    unset($catch_context->possibly_thrown_exceptions[$exception]);
+                }
+            }
+
+            if (!$rethrow_is_recorded) {
+                continue;
+            }
+
+            foreach ($caught_exceptions as $exception => $_) {
+                $catch_context->possibly_thrown_exceptions[$exception][$hash] = $codelocation;
+            }
+        }
     }
 }

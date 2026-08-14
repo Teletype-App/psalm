@@ -6,7 +6,10 @@ namespace Psalm\Internal\Analyzer;
 
 use function strtolower;
 
-/** @internal */
+/**
+ * @internal
+ * @psalm-external-mutation-free
+ */
 final class InferredThrowsBuffer
 {
     /**

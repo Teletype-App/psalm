@@ -25,6 +25,7 @@ use function preg_replace;
 use function readdir;
 use function rmdir;
 use function str_replace;
+use function substr_count;
 use function sys_get_temp_dir;
 use function tempnam;
 use function unlink;
@@ -87,6 +88,10 @@ final class PsalmEndToEndTest extends TestCase
     {
         @unlink(self::$tmpDir . '/psalm.xml');
 
+        if (file_exists(self::$tmpDir . '/.git')) {
+            self::recursiveRemoveDirectory(self::$tmpDir . '/.git');
+        }
+
         if (file_exists(self::$tmpDir . '/cache')) {
             self::recursiveRemoveDirectory(self::$tmpDir . '/cache');
         }
@@ -111,6 +116,61 @@ final class PsalmEndToEndTest extends TestCase
         $output = $this->runPsalm(['--alter', '--help'], self::$tmpDir)['STDOUT'];
 
         $this->assertStringContainsString('--find-unused-variables', $output);
+        $this->assertStringContainsString('--changed', $output);
+    }
+
+    public function testPsalterChangesOnlyFunctionsTouchedByGitDiff(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                function changed(): void
+                {
+                    throw new \RuntimeException();
+                }
+
+                function unchanged(): void
+                {
+                    throw new \LogicException();
+                }
+                PHP,
+        );
+
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'psalm.xml', 'src/FileWithErrors.php'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        file_put_contents($file_path, str_replace('RuntimeException();', 'RuntimeException("changed");', $contents));
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--changed',
+            '--issues=MissingThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+        $this->assertStringNotContainsString('@throws LogicException', $contents);
     }
 
     public function testInit(): void
@@ -493,6 +553,82 @@ final class PsalmEndToEndTest extends TestCase
         foreach ($contentsAfterFirstRun as $filename => $contents) {
             $this->assertSame($contents, file_get_contents(self::$tmpDir . '/src/' . $filename));
         }
+    }
+
+    public function testPsalmPropagatesInferredThrowsToAllSelectedCallers(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $files = [
+            'A.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                class A
+                {
+                    public function execute(B $b): void
+                    {
+                        $b->execute();
+                    }
+                }
+                PHP,
+            'B.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                class B
+                {
+                    public function execute(C $c): void
+                    {
+                        $c->execute();
+                    }
+                }
+                PHP,
+            'C.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class C
+                {
+                    public function execute(): void
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+                PHP,
+        ];
+
+        foreach ($files as $filename => $contents) {
+            file_put_contents(self::$tmpDir . '/src/' . $filename, $contents);
+        }
+
+        $result = $this->runPsalm(
+            [
+                '--php-version=8.3',
+                '--show-info=false',
+                self::$tmpDir . '/src/A.php',
+                self::$tmpDir . '/src/B.php',
+                self::$tmpDir . '/src/C.php',
+            ],
+            self::$tmpDir,
+            true,
+        );
+
+        $this->assertSame(2, $result['CODE']);
+        $this->assertSame(3, substr_count($result['STDOUT'], 'RuntimeException is thrown but not caught'));
     }
 
     public function testPsalm(): void
