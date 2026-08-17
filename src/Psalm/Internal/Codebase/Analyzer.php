@@ -556,6 +556,7 @@ final class Analyzer
             }
 
             InferredThrowsBuffer::clear();
+            FunctionDocblockManipulator::clearCacheForFiles($files_to_reanalyze);
             $files_to_analyze = $this->files_to_analyze;
             $this->files_to_analyze = $files_to_reanalyze;
             $this->doAnalysis($project_analyzer, $pool_size);

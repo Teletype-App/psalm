@@ -366,6 +366,71 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
     }
 
+    public function testPsalterKeepsThrowsDocumentedByMultipleCallersOfPrivateMethod(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        $psalmXml = str_replace('findUnusedCode="true"', 'findUnusedCode="false"', $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        $selectedFileContents = <<<'PHP'
+            <?php
+
+            namespace Foo;
+
+            use Exception;
+            use InvalidArgumentException;
+
+            class SelectedFile
+            {
+                /**
+                 * @throws Exception
+                 * @throws InvalidArgumentException
+                 */
+                public function first(): void
+                {
+                    $this->fail();
+                }
+
+                /**
+                 * @throws Exception
+                 * @throws InvalidArgumentException
+                 */
+                public function second(): void
+                {
+                    $this->fail();
+                }
+
+                /** @throws Exception */
+                private function fail(): void
+                {
+                    throw new InvalidArgumentException();
+                }
+            }
+            PHP;
+        file_put_contents($selectedFile, $selectedFileContents);
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+    }
+
     public function testPsalterKeepsParentThrowsInheritedByTraitMethod(): void
     {
         $this->runPsalmInit();

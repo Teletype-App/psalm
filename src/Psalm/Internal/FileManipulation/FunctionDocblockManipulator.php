@@ -972,6 +972,17 @@ final class FunctionDocblockManipulator
     }
 
     /**
+     * @param array<string, string> $file_paths
+     * @psalm-external-mutation-free
+     */
+    public static function clearCacheForFiles(array $file_paths): void
+    {
+        foreach ($file_paths as $file_path) {
+            unset(self::$manipulators[$file_path]);
+        }
+    }
+
+    /**
      * @param array<string, array<int, FunctionDocblockManipulator>> $manipulators
      * @psalm-external-mutation-free
      */
