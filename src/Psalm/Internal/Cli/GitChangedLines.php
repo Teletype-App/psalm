@@ -27,17 +27,15 @@ final class GitChangedLines
      */
     public static function collect(string $project_path, ?string $base_ref): array
     {
-        $diff_specs = $base_ref === null ? ['HEAD'] : [$base_ref . '...HEAD', 'HEAD'];
+        $diff_arguments = $base_ref === null ? ['HEAD'] : ['--merge-base', $base_ref];
         $files = [];
 
-        foreach ($diff_specs as $diff_spec) {
-            foreach (self::run(
-                ['git', 'diff', '--no-ext-diff', '--name-only', '--diff-filter=ACMRTU', '-z', $diff_spec],
-                $project_path,
-            ) as $file_path) {
-                if ($file_path !== '' && str_ends_with(strtolower($file_path), '.php')) {
-                    $files[$file_path] = true;
-                }
+        foreach (self::run(
+            ['git', 'diff', '--no-ext-diff', '--name-only', '--diff-filter=ACMRTU', '-z', ...$diff_arguments],
+            $project_path,
+        ) as $file_path) {
+            if ($file_path !== '' && str_ends_with(strtolower($file_path), '.php')) {
+                $files[$file_path] = true;
             }
         }
 
@@ -61,21 +59,19 @@ final class GitChangedLines
                 continue;
             }
 
-            foreach ($diff_specs as $diff_spec) {
-                $output = self::runRaw(
-                    ['git', 'diff', '--no-ext-diff', '--unified=0', $diff_spec, '--', $file_path],
-                    $project_path,
-                );
+            $output = self::runRaw(
+                ['git', 'diff', '--no-ext-diff', '--unified=0', ...$diff_arguments, '--', $file_path],
+                $project_path,
+            );
 
-                preg_match_all('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/m', $output, $matches, PREG_SET_ORDER);
-                foreach ($matches as $match) {
-                    if (!isset($match[1])) {
-                        continue;
-                    }
-                    $start = (int) $match[1];
-                    $count = isset($match[2]) ? (int) $match[2] : 1;
-                    $changed_lines[$absolute_path][] = [$start, $start + max(1, $count) - 1];
+            preg_match_all('/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/m', $output, $matches, PREG_SET_ORDER);
+            foreach ($matches as $match) {
+                if (!isset($match[1])) {
+                    continue;
                 }
+                $start = (int) $match[1];
+                $count = isset($match[2]) ? (int) $match[2] : 1;
+                $changed_lines[$absolute_path][] = [$start, $start + max(1, $count) - 1];
             }
         }
 

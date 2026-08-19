@@ -28,6 +28,7 @@ use function str_replace;
 use function substr_count;
 use function sys_get_temp_dir;
 use function tempnam;
+use function trim;
 use function unlink;
 
 use const DIRECTORY_SEPARATOR;
@@ -211,6 +212,69 @@ final class PsalmEndToEndTest extends TestCase
             PHP_BINARY,
             $this->psalter,
             '--changed',
+            '--issues=MissingThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+    }
+
+    public function testPsalterBaseUsesWorkingTreeLineNumbers(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                function changed(): void
+                {
+                }
+                PHP,
+        );
+
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'psalm.xml', 'src/FileWithErrors.php'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+        $base_process = new Process(['git', 'rev-parse', 'HEAD'], self::$tmpDir);
+        $base_process->mustRun();
+        $base_ref = trim($base_process->getOutput());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        file_put_contents($file_path, str_replace("{\n}", "{\n    throw new \\RuntimeException();\n}", $contents));
+        (new Process(['git', 'add', 'src/FileWithErrors.php'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Feature'],
+            self::$tmpDir,
+        ))->mustRun();
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        file_put_contents(
+            $file_path,
+            str_replace('namespace Foo;', "namespace Foo;\n\n// Local work shifts committed line numbers.\n// 01\n// 02\n// 03", $contents),
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--changed',
+            '--base=' . $base_ref,
             '--issues=MissingThrowsDocblock',
             '--no-progress',
         ], self::$tmpDir);
