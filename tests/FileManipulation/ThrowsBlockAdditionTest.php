@@ -157,6 +157,60 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'narrowRethrownThrowableAndPreserveSpecificExceptions' => [
+                'input' => '<?php
+                    class ApiException extends Exception {}
+                    class ExternalServiceOperationError extends ApiException {}
+                    class ValidateException extends ApiException {}
+
+                    interface Service {
+                        /** @throws Throwable */
+                        public function execute(): void;
+                    }
+
+                    function foo(Service $service): void {
+                        try {
+                            $service->execute();
+                            throw new ExternalServiceOperationError();
+                        } catch (Throwable $throwable) {
+                            if ($throwable instanceof ApiException) {
+                                throw $throwable;
+                            }
+
+                            throw new ValidateException();
+                        }
+                    }',
+                'output' => '<?php
+                    class ApiException extends Exception {}
+                    class ExternalServiceOperationError extends ApiException {}
+                    class ValidateException extends ApiException {}
+
+                    interface Service {
+                        /** @throws Throwable */
+                        public function execute(): void;
+                    }
+
+                    /**
+                     * @throws ApiException
+                     * @throws ExternalServiceOperationError
+                     * @throws ValidateException
+                     */
+                    function foo(Service $service): void {
+                        try {
+                            $service->execute();
+                            throw new ExternalServiceOperationError();
+                        } catch (Throwable $throwable) {
+                            if ($throwable instanceof ApiException) {
+                                throw $throwable;
+                            }
+
+                            throw new ValidateException();
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'removeBroadThrowsCoveredByNarrowerAnnotation' => [
                 'input' => '<?php
                     /**

@@ -14,6 +14,7 @@ use Psalm\Internal\Analyzer\ScopeAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\Scope\FinallyScope;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Issue\InvalidCatch;
 use Psalm\IssueBuffer;
 use Psalm\Type;
@@ -528,11 +529,11 @@ final class TryAnalyzer
         foreach ($rethrows as $rethrow) {
             $codelocation = new CodeLocation($statements_analyzer->getFileAnalyzer(), $rethrow);
             $hash = $codelocation->getHash();
-            $rethrow_is_recorded = false;
+            $rethrow_exceptions = [];
 
             foreach ($catch_context->possibly_thrown_exceptions as $exception => $_) {
                 if (isset($catch_context->possibly_thrown_exceptions[$exception][$hash])) {
-                    $rethrow_is_recorded = true;
+                    $rethrow_exceptions[$exception] = true;
                 }
 
                 unset($catch_context->possibly_thrown_exceptions[$exception][$hash]);
@@ -541,12 +542,32 @@ final class TryAnalyzer
                 }
             }
 
-            if (!$rethrow_is_recorded) {
+            if ($rethrow_exceptions === []) {
                 continue;
             }
 
-            foreach ($caught_exceptions as $exception => $_) {
-                $catch_context->possibly_thrown_exceptions[$exception][$hash] = $codelocation;
+            $codebase = $statements_analyzer->getCodebase();
+            foreach ($rethrow_exceptions as $rethrow_exception => $_) {
+                $rethrow_type = new Union([new TNamedObject($rethrow_exception)]);
+                $rethrow_was_restored = false;
+
+                foreach ($caught_exceptions as $caught_exception => $_) {
+                    $caught_type = new Union([new TNamedObject($caught_exception)]);
+                    if (UnionTypeComparator::isContainedBy($codebase, $caught_type, $rethrow_type)) {
+                        $exception = $caught_exception;
+                    } elseif (UnionTypeComparator::isContainedBy($codebase, $rethrow_type, $caught_type)) {
+                        $exception = $rethrow_exception;
+                    } else {
+                        continue;
+                    }
+
+                    $catch_context->possibly_thrown_exceptions[$exception][$hash] = $codelocation;
+                    $rethrow_was_restored = true;
+                }
+
+                if (!$rethrow_was_restored) {
+                    $catch_context->possibly_thrown_exceptions[$rethrow_exception][$hash] = $codelocation;
+                }
             }
         }
     }
