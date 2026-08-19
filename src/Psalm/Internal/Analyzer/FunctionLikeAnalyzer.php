@@ -1022,10 +1022,9 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         $missingThrowsDocblockErrors = [];
         $missingThrowsDocblockImports = [];
         if ($missingThrowsDocblockExceptions) {
-            $combined_exceptions = TypeCombiner::combine($missingThrowsDocblockExceptions, $codebase);
             [$missingThrowsDocblockErrors, $missingThrowsDocblockImports] = ThrowsDocblockImportResolver::resolve(
                 $this->source,
-                array_values($combined_exceptions->getAtomicTypes()),
+                $missingThrowsDocblockExceptions,
             );
         }
 

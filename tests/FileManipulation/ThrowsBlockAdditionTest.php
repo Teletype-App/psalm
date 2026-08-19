@@ -427,7 +427,7 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
-            'simplifyThrowsAnnotationToBroadestException' => [
+            'preserveCompleteInferredThrowsHierarchy' => [
                 'input' => '<?php
                     /** @throws \Exception */
                     function throwsException(): void {}
@@ -435,9 +435,13 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     /** @throws \Throwable */
                     function throwsThrowable(): void {}
 
+                    /** @throws \RuntimeException */
+                    function throwsRuntimeException(): void {}
+
                     function foo(): void {
                         throwsException();
                         throwsThrowable();
+                        throwsRuntimeException();
                     }',
                 'output' => '<?php
                     /** @throws \Exception */
@@ -446,12 +450,16 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     /** @throws \Throwable */
                     function throwsThrowable(): void {}
 
+                    /** @throws \RuntimeException */
+                    function throwsRuntimeException(): void {}
+
                     /**
-                     * @throws Throwable
+                     * @throws Exception|Throwable|RuntimeException
                      */
                     function foo(): void {
                         throwsException();
                         throwsThrowable();
+                        throwsRuntimeException();
                     }',
                 'php_version' => '7.4',
                 'issues_to_fix' => ['MissingThrowsDocblock'],
