@@ -240,6 +240,13 @@ final class ArgumentsAnalyzer
             $was_inside_isset = $context->inside_isset;
             $context->inside_isset = false;
 
+            if ($param?->is_immediately_invoked_callable
+                && ($arg->value instanceof PhpParser\Node\Expr\Closure
+                    || $arg->value instanceof PhpParser\Node\Expr\ArrowFunction)
+            ) {
+                $statements_analyzer->node_data->setImmediatelyInvokedClosure($arg->value);
+            }
+
             if (ExpressionAnalyzer::analyze(
                 $statements_analyzer,
                 $arg->value,

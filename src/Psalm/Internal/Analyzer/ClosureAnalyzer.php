@@ -86,6 +86,8 @@ final class ClosureAnalyzer extends FunctionLikeAnalyzer
         }
 
         $use_context = new Context($context->self);
+        $is_immediately_invoked = $statements_analyzer->node_data->isImmediatelyInvokedClosure($stmt);
+        $use_context->collect_exceptions = $context->collect_exceptions && $is_immediately_invoked;
 
         $codebase = $statements_analyzer->getCodebase();
 
@@ -206,6 +208,10 @@ final class ClosureAnalyzer extends FunctionLikeAnalyzer
 
         $byref_vars = [];
         $closure_analyzer->analyze($use_context, $statements_analyzer->node_data, $context, false, $byref_vars);
+
+        if ($is_immediately_invoked) {
+            $context->mergeExceptions($use_context);
+        }
 
         foreach ($byref_vars as $key => $value) {
             $context->vars_in_scope[$key] = $value;

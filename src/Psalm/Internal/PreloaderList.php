@@ -831,6 +831,7 @@ final class PreloaderList {
         \Psalm\Internal\PhpVisitor\CheckTrivialExprVisitor::class,
         \Psalm\Internal\PhpVisitor\CloningVisitor::class,
         \Psalm\Internal\PhpVisitor\ConditionCloningVisitor::class,
+        \Psalm\Internal\PhpVisitor\ImmediatelyInvokedCallableVisitor::class,
         \Psalm\Internal\PhpVisitor\NodeCleanerVisitor::class,
         \Psalm\Internal\PhpVisitor\NodeCounterVisitor::class,
         \Psalm\Internal\PhpVisitor\OffsetShifterVisitor::class,

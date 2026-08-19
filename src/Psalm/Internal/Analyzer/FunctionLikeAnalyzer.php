@@ -837,7 +837,10 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             );
         }
         $missingThrowsDocblockExceptions = [];
-        if (!$context->collect_initializations && !$context->collect_mutations) {
+        if (!$context->collect_initializations
+            && !$context->collect_mutations
+            && !$this instanceof ClosureAnalyzer
+        ) {
             foreach ($uncaught_throws as $possibly_thrown_exception => $codelocations) {
                 if (!ThrowsDocblockImportResolver::isValidClassLikeName($possibly_thrown_exception)) {
                     continue;
@@ -903,6 +906,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         $overlyBroadThrowsDocblockImports = [];
         if (!$context->collect_initializations
             && !$context->collect_mutations
+            && !$this instanceof ClosureAnalyzer
             && $codebase->config->check_for_throws_docblock
             && !($this->function instanceof ClassMethod && $this->function->stmts === null)
         ) {

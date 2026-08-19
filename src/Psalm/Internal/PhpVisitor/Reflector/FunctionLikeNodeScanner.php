@@ -27,6 +27,7 @@ use Psalm\Internal\Analyzer\NamespaceAnalyzer;
 use Psalm\Internal\Analyzer\ScopeAnalyzer;
 use Psalm\Internal\Analyzer\Statements\Expression\SimpleTypeInferer;
 use Psalm\Internal\MethodIdentifier;
+use Psalm\Internal\PhpVisitor\ImmediatelyInvokedCallableVisitor;
 use Psalm\Internal\Provider\NodeDataProvider;
 use Psalm\Internal\Scanner\FileScanner;
 use Psalm\Internal\Type\TypeAlias;
@@ -220,6 +221,25 @@ final class FunctionLikeNodeScanner
         }
 
         $storage->required_param_count = $required_param_count;
+
+        $function_stmts = $stmt->getStmts();
+        if ($function_stmts !== null && $storage->params !== []) {
+            $parameter_names = [];
+            foreach ($storage->params as $param) {
+                $parameter_names[$param->name] = true;
+            }
+
+            $visitor = new ImmediatelyInvokedCallableVisitor($parameter_names);
+            $traverser = new PhpParser\NodeTraverser($visitor);
+            $traverser->traverse($function_stmts);
+
+            if (!$visitor->hasYield()) {
+                $invoked_parameters = $visitor->getInvokedParameters();
+                foreach ($storage->params as $param) {
+                    $param->is_immediately_invoked_callable = isset($invoked_parameters[$param->name]);
+                }
+            }
+        }
 
         if ($stmt instanceof PhpParser\Node\Stmt\Function_
             || $stmt instanceof PhpParser\Node\Stmt\ClassMethod

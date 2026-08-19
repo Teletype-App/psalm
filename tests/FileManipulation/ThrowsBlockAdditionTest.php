@@ -113,6 +113,138 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'addDirectThrowFromImmediatelyInvokedClosure' => [
+                'input' => '<?php
+                    interface Mutex {
+                        /**
+                         * @template T
+                         * @param callable(): T $callback
+                         * @return T
+                         * @throws Throwable
+                         */
+                        public function synchronized(callable $callback);
+                    }
+
+                    abstract class AbstractMutex implements Mutex {
+                        public function synchronized(callable $callback) {
+                            return $callback();
+                        }
+                    }
+
+                    final class RedisMutex extends AbstractMutex {}
+
+                    final class Service {
+                        /** @throws Throwable */
+                        public function run(RedisMutex $mutex): bool {
+                            return $mutex->synchronized(static function (): bool {
+                                throw new DomainException();
+                            });
+                        }
+                    }',
+                'output' => '<?php
+                    interface Mutex {
+                        /**
+                         * @template T
+                         * @param callable(): T $callback
+                         * @return T
+                         * @throws Throwable
+                         */
+                        public function synchronized(callable $callback);
+                    }
+
+                    abstract class AbstractMutex implements Mutex {
+                        public function synchronized(callable $callback) {
+                            return $callback();
+                        }
+                    }
+
+                    final class RedisMutex extends AbstractMutex {}
+
+                    final class Service {
+                        /**
+                         * @throws DomainException
+                         * @throws Throwable
+                         */
+                        public function run(RedisMutex $mutex): bool {
+                            return $mutex->synchronized(static function (): bool {
+                                throw new DomainException();
+                            });
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'doNotAddThrowFromDeferredClosure' => [
+                'input' => '<?php
+                    final class CallbackStore {
+                        public function defer(callable $callback): Closure {
+                            return static function () use ($callback): void {
+                                $callback();
+                            };
+                        }
+                    }
+
+                    final class Service {
+                        public function register(CallbackStore $store): Closure {
+                            return $store->defer(static function (): void {
+                                throw new DomainException();
+                            });
+                        }
+                    }',
+                'output' => '<?php
+                    final class CallbackStore {
+                        public function defer(callable $callback): Closure {
+                            return static function () use ($callback): void {
+                                $callback();
+                            };
+                        }
+                    }
+
+                    final class Service {
+                        public function register(CallbackStore $store): Closure {
+                            return $store->defer(static function (): void {
+                                throw new DomainException();
+                            });
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'doNotAddThrowFromGeneratorCallback' => [
+                'input' => '<?php
+                    final class Stream {
+                        public function defer(callable $callback): Generator {
+                            yield $callback();
+                        }
+                    }
+
+                    final class Service {
+                        public function register(Stream $stream): Generator {
+                            return $stream->defer(static function (): void {
+                                throw new DomainException();
+                            });
+                        }
+                    }',
+                'output' => '<?php
+                    final class Stream {
+                        public function defer(callable $callback): Generator {
+                            yield $callback();
+                        }
+                    }
+
+                    final class Service {
+                        public function register(Stream $stream): Generator {
+                            return $stream->defer(static function (): void {
+                                throw new DomainException();
+                            });
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'treatFluentExceptionConstructionAsDirectThrow' => [
                 'input' => '<?php
                     class ApiException extends Exception {}

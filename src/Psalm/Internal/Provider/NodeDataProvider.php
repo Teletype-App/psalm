@@ -39,6 +39,9 @@ final class NodeDataProvider implements NodeTypeProvider
     /** @var SplObjectStorage<Node, array<int, Possibilities>> */
     private SplObjectStorage $node_if_false_assertions;
 
+    /** @var SplObjectStorage<Expr\Closure|Expr\ArrowFunction, true> */
+    private SplObjectStorage $immediately_invoked_closures;
+
     public bool $cache_assertions = true;
 
     public function __construct()
@@ -47,6 +50,7 @@ final class NodeDataProvider implements NodeTypeProvider
         $this->node_assertions = new SplObjectStorage();
         $this->node_if_true_assertions = new SplObjectStorage();
         $this->node_if_false_assertions = new SplObjectStorage();
+        $this->immediately_invoked_closures = new SplObjectStorage();
     }
 
     /**
@@ -125,6 +129,16 @@ final class NodeDataProvider implements NodeTypeProvider
     public function getIfFalseAssertions(Expr $node): ?array
     {
         return $this->node_if_false_assertions[$node] ?? null;
+    }
+
+    public function setImmediatelyInvokedClosure(Expr\Closure|Expr\ArrowFunction $node): void
+    {
+        $this->immediately_invoked_closures[$node] = true;
+    }
+
+    public function isImmediatelyInvokedClosure(Expr\Closure|Expr\ArrowFunction $node): bool
+    {
+        return isset($this->immediately_invoked_closures[$node]);
     }
 
     public function isPureCompatible(Expr $node): bool
