@@ -568,7 +568,23 @@ final class FunctionDocblockManipulator
         if ($this->normalizeThrowsDocblock && isset($parsed_docblock->tags['throws'])) {
             $throws_tags = [];
             $seen_throws_clauses = [];
+            $described_throws_clauses = [];
             $has_described_throws = false;
+
+            foreach ($parsed_docblock->tags['throws'] as $throws_tag) {
+                $throws_parts = preg_split('/[\s]+/', $throws_tag, 2);
+                if ($throws_parts === false
+                    || $throws_parts[0] === ''
+                    || !isset($throws_parts[1])
+                    || trim($throws_parts[1]) === ''
+                ) {
+                    continue;
+                }
+
+                foreach (explode('|', $throws_parts[0]) as $exception) {
+                    $described_throws_clauses[strtolower(trim($exception))] = true;
+                }
+            }
 
             foreach ($parsed_docblock->tags['throws'] as $throws_tag) {
                 $throws_parts = preg_split('/[\s]+/', $throws_tag, 2);
@@ -590,7 +606,10 @@ final class FunctionDocblockManipulator
                 foreach ($exceptions as $exception) {
                     $exception = trim($exception);
                     $exception_lc = strtolower($exception);
-                    if ($exception === '' || isset($seen_throws_clauses[$exception_lc])) {
+                    if ($exception === ''
+                        || isset($seen_throws_clauses[$exception_lc])
+                        || isset($described_throws_clauses[$exception_lc])
+                    ) {
                         $modified_docblock = true;
                         continue;
                     }

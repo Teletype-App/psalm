@@ -65,7 +65,7 @@ final class ThrowsDocblockImportResolver
         $documented_throws = [];
         $documented_throw_names = [];
         $described_throws = [];
-        $throws_clauses = [];
+        $documented_throw_names_lc = [];
         $has_duplicates = false;
 
         foreach ($parsed_docblock->tags['throws'] ?? [] as $throws_entry) {
@@ -75,17 +75,17 @@ final class ThrowsDocblockImportResolver
             }
 
             $throws_clause = $throws_parts[0];
-            $normalized_throws_clause = strtolower($throws_clause);
-            if (isset($throws_clauses[$normalized_throws_clause])) {
-                $has_duplicates = true;
-            } else {
-                $throws_clauses[$normalized_throws_clause] = true;
-            }
-
             foreach (explode('|', $throws_clause) as $throw_class) {
                 $throw_class = trim($throw_class);
                 if ($throw_class === '' || !self::isValidClassLikeName($throw_class)) {
                     continue;
+                }
+
+                $throw_class_lc = strtolower($throw_class);
+                if (isset($documented_throw_names_lc[$throw_class_lc])) {
+                    $has_duplicates = true;
+                } else {
+                    $documented_throw_names_lc[$throw_class_lc] = true;
                 }
 
                 $exception_fqcln = $throw_class === 'self'

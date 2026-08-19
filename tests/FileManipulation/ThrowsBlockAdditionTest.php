@@ -883,6 +883,63 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'removeDuplicateThrowsTypeFromUnionAnnotation' => [
+                'input' => '<?php
+                    /**
+                     * @throws InvalidArgumentException|DomainException
+                     * @throws InvalidArgumentException
+                     */
+                    function foo(bool $invalid): void {
+                        if ($invalid) {
+                            throw new InvalidArgumentException();
+                        }
+
+                        throw new DomainException();
+                    }',
+                'output' => '<?php
+                    /**
+                     * @throws DomainException
+                     * @throws InvalidArgumentException
+                     */
+                    function foo(bool $invalid): void {
+                        if ($invalid) {
+                            throw new InvalidArgumentException();
+                        }
+
+                        throw new DomainException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'removeUndescribedDuplicateBeforeDescribedThrowsUnion' => [
+                'input' => '<?php
+                    /**
+                     * @throws InvalidArgumentException
+                     * @throws InvalidArgumentException|DomainException when validation fails
+                     */
+                    function foo(bool $invalid): void {
+                        if ($invalid) {
+                            throw new InvalidArgumentException();
+                        }
+
+                        throw new DomainException();
+                    }',
+                'output' => '<?php
+                    /**
+                     * @throws InvalidArgumentException|DomainException when validation fails
+                     */
+                    function foo(bool $invalid): void {
+                        if ($invalid) {
+                            throw new InvalidArgumentException();
+                        }
+
+                        throw new DomainException();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'ignoreMalformedThrowsAnnotation' => [
                 'input' => '<?php
                     class SomeClass {
