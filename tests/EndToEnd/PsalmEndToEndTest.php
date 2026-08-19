@@ -366,6 +366,71 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
     }
 
+    public function testPsalterConvergesAfterNarrowingCalleeThrows(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class SelectedFile
+                {
+                    private int $calls = 0;
+
+                    /**
+                     * @throws \Throwable
+                     * @psalm-external-mutation-free
+                     */
+                    public function notify(): void
+                    {
+                        $this->getPayload();
+                    }
+
+                    /**
+                     * @throws \Throwable
+                     * @psalm-external-mutation-free
+                     */
+                    public function getPayload(): void
+                    {
+                        $this->calls++;
+                        throw new RuntimeException();
+                    }
+                }
+                PHP,
+        );
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $contents = file_get_contents($selectedFile);
+        $this->assertIsString($contents);
+        $this->assertSame(2, substr_count($contents, '@throws RuntimeException'));
+        $this->assertStringNotContainsString('@throws \Throwable', $contents);
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($contents, file_get_contents($selectedFile));
+    }
+
     public function testPsalterKeepsThrowsDocumentedByMultipleCallersOfPrivateMethod(): void
     {
         $this->runPsalmInit();

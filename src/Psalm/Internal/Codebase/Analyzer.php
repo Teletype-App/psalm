@@ -522,7 +522,7 @@ final class Analyzer
                     continue;
                 }
 
-                $new_throws = $summaries[$function_id] + $storage->inferred_throws;
+                $new_throws = $summaries[$function_id];
                 if ($new_throws === $storage->inferred_throws) {
                     continue;
                 }
