@@ -19,7 +19,6 @@ use Psalm\Storage\Mutations;
 
 use function array_key_exists;
 use function array_merge;
-use function array_reduce;
 use function array_slice;
 use function array_unique;
 use function array_values;
@@ -555,17 +554,13 @@ final class FunctionDocblockManipulator
 
         if (count($this->throwsExceptions) > 0) {
             $modified_docblock = true;
-            $inferredThrowsClause = array_reduce(
-                $this->throwsExceptions,
-                static fn(string $throwsClause, string $exception) => $throwsClause === ''
-                    ? $exception
-                    : $throwsClause.'|'.$exception,
-                '',
-            );
             if (array_key_exists('throws', $parsed_docblock->tags)) {
-                $parsed_docblock->tags['throws'][] = $inferredThrowsClause;
+                $parsed_docblock->tags['throws'] = array_merge(
+                    $parsed_docblock->tags['throws'],
+                    $this->throwsExceptions,
+                );
             } else {
-                $parsed_docblock->tags['throws'] = [$inferredThrowsClause];
+                $parsed_docblock->tags['throws'] = $this->throwsExceptions;
             }
         }
 
@@ -574,19 +569,36 @@ final class FunctionDocblockManipulator
             $seen_throws_clauses = [];
 
             foreach ($parsed_docblock->tags['throws'] as $throws_tag) {
-                $throws_parts = preg_split('/[\s]+/', $throws_tag);
-                $throws_clause = strtolower($throws_parts[0] ?? '');
-
-                if ($throws_clause !== '' && isset($seen_throws_clauses[$throws_clause])) {
-                    $modified_docblock = true;
+                $throws_parts = preg_split('/[\s]+/', $throws_tag, 2);
+                if ($throws_parts === false || $throws_parts[0] === '') {
+                    $throws_tags[] = $throws_tag;
                     continue;
                 }
 
-                if ($throws_clause !== '') {
-                    $seen_throws_clauses[$throws_clause] = true;
+                $exceptions = explode('|', $throws_parts[0]);
+                foreach ($exceptions as $exception) {
+                    $exception = trim($exception);
+                    $exception_lc = strtolower($exception);
+                    if ($exception === '' || isset($seen_throws_clauses[$exception_lc])) {
+                        $modified_docblock = true;
+                        continue;
+                    }
+
+                    $seen_throws_clauses[$exception_lc] = true;
+                    $throws_tags[] = $exception
+                        . (isset($throws_parts[1]) ? ' ' . $throws_parts[1] : '');
                 }
 
-                $throws_tags[] = $throws_tag;
+                if (count($exceptions) > 1) {
+                    $modified_docblock = true;
+                }
+            }
+
+            $unsorted_throws_tags = $throws_tags;
+            natcasesort($throws_tags);
+            $throws_tags = array_values($throws_tags);
+            if ($throws_tags !== $unsorted_throws_tags) {
+                $modified_docblock = true;
             }
 
             $parsed_docblock->tags['throws'] = $throws_tags;

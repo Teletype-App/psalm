@@ -103,7 +103,8 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     /**
-                     * @throws InvalidArgumentException|RuntimeException
+                     * @throws InvalidArgumentException
+                     * @throws RuntimeException
                      */
                     function foo(bool $invalid): void {
                         if ($invalid) {
@@ -140,8 +141,8 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }
 
                     /**
-                     * @throws Throwable
                      * @throws RuntimeException
+                     * @throws Throwable
                      */
                     function foo(Service $service): void {
                         try {
@@ -227,7 +228,8 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
 
                     class Security {
                         /**
-                         * @throws InvalidArgumentException|RandomException
+                         * @throws InvalidArgumentException
+                         * @throws RandomException
                          * @throws \ValueError
                          */
                         public function random(int $length): int {
@@ -412,7 +414,8 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     /**
-                     * @throws InvalidArgumentException|DomainException
+                     * @throws DomainException
+                     * @throws InvalidArgumentException
                      */
                     function foo(string $s): string {
                         if("" === $s) {
@@ -454,7 +457,9 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     function throwsRuntimeException(): void {}
 
                     /**
-                     * @throws Exception|Throwable|RuntimeException
+                     * @throws Exception
+                     * @throws RuntimeException
+                     * @throws Throwable
                      */
                     function foo(): void {
                         throwsException();
@@ -500,8 +505,9 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     /**
-                     * @throws InvalidArgumentException|DomainException
+                     * @throws DomainException
                      * @throws Exception
+                     * @throws InvalidArgumentException
                      */
                     function foo(string $s): string {
                         if("" === $s) {
@@ -529,8 +535,8 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     /**
-                     * @throws InvalidArgumentException
                      * @throws DomainException
+                     * @throws InvalidArgumentException
                      */
                     function foo(string $s): string {
                         if("" === $s) {
