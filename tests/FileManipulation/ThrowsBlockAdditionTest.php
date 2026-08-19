@@ -196,7 +196,7 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
-            'doesNotTreatExceptionCreatedByFactoryAsDirectThrow' => [
+            'treatExceptionReturnedByFactoryAsDirectThrow' => [
                 'input' => '<?php
                     class ApiException extends Exception {}
                     class BadRequestException extends ApiException {}
@@ -207,8 +207,8 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }
 
                     /** @throws ApiException */
-                    function foo(): void {
-                        throw (new ExceptionFactory())->create();
+                    function foo(ExceptionFactory $factory): void {
+                        throw $factory->create();
                     }',
                 'output' => '<?php
                     class ApiException extends Exception {}
@@ -219,9 +219,46 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                         }
                     }
 
-                    /** @throws ApiException */
+                    /**
+                     * @throws ApiException
+                     * @throws BadRequestException
+                     */
+                    function foo(ExceptionFactory $factory): void {
+                        throw $factory->create();
+                    }',
+                'php_version' => '8.1',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'treatExceptionReturnedByStaticHelperAsDirectThrow' => [
+                'input' => '<?php
+                    class BaseException extends Exception {}
+                    class ApiException extends BaseException {}
+                    class ExceptionFactory {
+                        public static function create(): ApiException {
+                            return new ApiException();
+                        }
+                    }
+
+                    /** @throws BaseException */
                     function foo(): void {
-                        throw (new ExceptionFactory())->create();
+                        throw ExceptionFactory::create();
+                    }',
+                'output' => '<?php
+                    class BaseException extends Exception {}
+                    class ApiException extends BaseException {}
+                    class ExceptionFactory {
+                        public static function create(): ApiException {
+                            return new ApiException();
+                        }
+                    }
+
+                    /**
+                     * @throws ApiException
+                     * @throws BaseException
+                     */
+                    function foo(): void {
+                        throw ExceptionFactory::create();
                     }',
                 'php_version' => '8.1',
                 'issues_to_fix' => ['MissingThrowsDocblock'],
