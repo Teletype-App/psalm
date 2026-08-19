@@ -286,6 +286,105 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertStringContainsString('@throws RuntimeException', $contents);
     }
 
+    public function testPsalterConvergesForRecursiveMethodsWithStaleThrows(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                final class RecursiveService
+                {
+                    /** @throws RuntimeException */
+                    public function first(): void
+                    {
+                        $this->second();
+                    }
+
+                    public function second(): void
+                    {
+                        $this->first();
+                    }
+                }
+                PHP,
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->setTimeout(10.0);
+        $process->run();
+        $this->assertSame(0, $process->getExitCode());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertStringNotContainsString('@throws', $contents);
+    }
+
+    public function testPsalterKeepsInterfaceThrowsAsContract(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                interface Service
+                {
+                    /** @throws RuntimeException */
+                    public function execute(): void;
+                }
+
+                final class Consumer
+                {
+                    public function __construct(private Service $service)
+                    {
+                    }
+
+                    public function consume(): void
+                    {
+                        $this->service->execute();
+                    }
+                }
+                PHP,
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode(), $process->getOutput() . $process->getErrorOutput());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertSame(2, substr_count($contents, '@throws RuntimeException'));
+    }
+
     public function testInit(): void
     {
         $this->assertStringStartsWith(

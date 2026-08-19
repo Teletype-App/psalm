@@ -261,7 +261,7 @@ final class Analyzer
             $this->file_provider->fileExists(...),
         );
 
-        self::resetInferredThrows();
+        $this->resetInferredThrows();
         InferredThrowsBuffer::clear();
         $this->doAnalysis($project_analyzer, $pool_size);
 
@@ -328,11 +328,16 @@ final class Analyzer
         }
     }
 
-    private static function resetInferredThrows(): void
+    private function resetInferredThrows(): void
     {
         foreach (ClassLikeStorageProvider::getAll() as $classlike_storage) {
             foreach ($classlike_storage->methods as $method_storage) {
-                $method_storage->inferred_throws = null;
+                $method_storage->inferred_throws = !$classlike_storage->is_interface
+                    && !$method_storage->abstract
+                    && $method_storage->location !== null
+                    && isset($this->files_to_analyze[$method_storage->location->file_path])
+                        ? []
+                        : null;
             }
         }
 
@@ -517,8 +522,14 @@ final class Analyzer
                 }
 
                 try {
-                    $storage = $codebase->methods->getStorage(MethodIdentifier::fromMethodIdReference($function_id));
+                    $method_id = MethodIdentifier::fromMethodIdReference($function_id);
+                    $storage = $codebase->methods->getStorage($method_id);
+                    $classlike_storage = $codebase->methods->getClassLikeStorageForMethod($method_id);
                 } catch (UnexpectedValueException) {
+                    continue;
+                }
+
+                if ($classlike_storage->is_interface || $storage->abstract) {
                     continue;
                 }
 
