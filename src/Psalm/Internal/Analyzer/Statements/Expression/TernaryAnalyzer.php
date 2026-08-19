@@ -243,6 +243,18 @@ final class TernaryAnalyzer
             return false;
         }
 
+        $stmt_cond_type = $statements_analyzer->node_data->getType($stmt->cond);
+
+        if ($context->collect_exceptions) {
+            if ($stmt_cond_type === null || !$stmt_cond_type->isAlwaysFalsy()) {
+                $context->mergeExceptions($if_context);
+            }
+
+            if ($stmt_cond_type === null || !$stmt_cond_type->isAlwaysTruthy()) {
+                $context->mergeExceptions($t_else_context);
+            }
+        }
+
         $assign_var_ifs = $if_context->assigned_var_ids;
         $assign_var_else = $t_else_context->assigned_var_ids;
         $assign_all = array_intersect_key($assign_var_ifs, $assign_var_else);
@@ -301,7 +313,6 @@ final class TernaryAnalyzer
         ];
 
         $lhs_type = null;
-        $stmt_cond_type = $statements_analyzer->node_data->getType($stmt->cond);
         if ($stmt->if) {
             if ($stmt_if_type = $statements_analyzer->node_data->getType($stmt->if)) {
                 $lhs_type = $stmt_if_type;

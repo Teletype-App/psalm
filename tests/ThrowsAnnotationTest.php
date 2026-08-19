@@ -1068,4 +1068,99 @@ final class ThrowsAnnotationTest extends TestCase
 
         $this->analyzeFile('somefile.php', $context);
     }
+
+    public function testUndocumentedThrowFromTernaryElseBranch(): void
+    {
+        $this->expectExceptionMessage('MissingThrowsDocblock');
+        $this->expectException(CodeException::class);
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                final class Thrower
+                {
+                    /** @throws RuntimeException */
+                    public function getValue(): int
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+
+                function getValue(Thrower $thrower, bool $use_default): int
+                {
+                    return $use_default ? 0 : $thrower->getValue();
+                }
+            ',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testUndocumentedThrowFromTernaryIfBranch(): void
+    {
+        $this->expectExceptionMessage('MissingThrowsDocblock');
+        $this->expectException(CodeException::class);
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                final class Thrower
+                {
+                    /** @throws RuntimeException */
+                    public function getValue(): int
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+
+                function getValue(Thrower $thrower, bool $use_default): int
+                {
+                    return $use_default ? $thrower->getValue() : 0;
+                }
+            ',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
+    public function testThrowFromUnreachableTernaryBranchesIsNotPropagated(): void
+    {
+        Config::getInstance()->check_for_throws_docblock = true;
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                final class Thrower
+                {
+                    /** @throws RuntimeException */
+                    public function getValue(): int
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+
+                function getValueFromUnreachableElse(Thrower $thrower): int
+                {
+                    /** @psalm-suppress RedundantCondition */
+                    return true ? 0 : $thrower->getValue();
+                }
+
+                function getValueFromUnreachableIf(Thrower $thrower): int
+                {
+                    /** @psalm-suppress TypeDoesNotContainType */
+                    return false ? $thrower->getValue() : 0;
+                }
+            ',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
 }
