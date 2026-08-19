@@ -568,6 +568,7 @@ final class FunctionDocblockManipulator
         if ($this->normalizeThrowsDocblock && isset($parsed_docblock->tags['throws'])) {
             $throws_tags = [];
             $seen_throws_clauses = [];
+            $has_described_throws = false;
 
             foreach ($parsed_docblock->tags['throws'] as $throws_tag) {
                 $throws_parts = preg_split('/[\s]+/', $throws_tag, 2);
@@ -577,6 +578,15 @@ final class FunctionDocblockManipulator
                 }
 
                 $exceptions = explode('|', $throws_parts[0]);
+                if (isset($throws_parts[1]) && trim($throws_parts[1]) !== '') {
+                    $has_described_throws = true;
+                    foreach ($exceptions as $exception) {
+                        $seen_throws_clauses[strtolower(trim($exception))] = true;
+                    }
+                    $throws_tags[] = $throws_tag;
+                    continue;
+                }
+
                 foreach ($exceptions as $exception) {
                     $exception = trim($exception);
                     $exception_lc = strtolower($exception);
@@ -595,11 +605,13 @@ final class FunctionDocblockManipulator
                 }
             }
 
-            $unsorted_throws_tags = $throws_tags;
-            natcasesort($throws_tags);
-            $throws_tags = array_values($throws_tags);
-            if ($throws_tags !== $unsorted_throws_tags) {
-                $modified_docblock = true;
+            if (!$has_described_throws) {
+                $unsorted_throws_tags = $throws_tags;
+                natcasesort($throws_tags);
+                $throws_tags = array_values($throws_tags);
+                if ($throws_tags !== $unsorted_throws_tags) {
+                    $modified_docblock = true;
+                }
             }
 
             $parsed_docblock->tags['throws'] = $throws_tags;

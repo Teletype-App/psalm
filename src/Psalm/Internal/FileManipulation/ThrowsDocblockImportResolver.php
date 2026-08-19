@@ -46,6 +46,7 @@ final class ThrowsDocblockImportResolver
      * @return array{
      *     documented_throws: array<string, true>,
      *     documented_throw_names: array<string, non-empty-list<non-empty-string>>,
+     *     described_throws: array<string, true>,
      *     has_duplicates: bool,
      * }
      */
@@ -55,6 +56,7 @@ final class ThrowsDocblockImportResolver
             return [
                 'documented_throws' => [],
                 'documented_throw_names' => [],
+                'described_throws' => [],
                 'has_duplicates' => false,
             ];
         }
@@ -62,11 +64,12 @@ final class ThrowsDocblockImportResolver
         $parsed_docblock = DocComment::parsePreservingLength($doc_comment, true);
         $documented_throws = [];
         $documented_throw_names = [];
+        $described_throws = [];
         $throws_clauses = [];
         $has_duplicates = false;
 
         foreach ($parsed_docblock->tags['throws'] ?? [] as $throws_entry) {
-            $throws_parts = preg_split('/[\s]+/', $throws_entry);
+            $throws_parts = preg_split('/[\s]+/', trim($throws_entry), 2);
             if ($throws_parts === false || $throws_parts[0] === '') {
                 continue;
             }
@@ -92,12 +95,16 @@ final class ThrowsDocblockImportResolver
                     : Type::getFQCLNFromString($throw_class, $source->getAliases());
                 $documented_throws[$exception_fqcln] = true;
                 $documented_throw_names[$exception_fqcln][] = $throw_class;
+                if (isset($throws_parts[1]) && trim($throws_parts[1]) !== '') {
+                    $described_throws[$exception_fqcln] = true;
+                }
             }
         }
 
         return [
             'documented_throws' => $documented_throws,
             'documented_throw_names' => $documented_throw_names,
+            'described_throws' => $described_throws,
             'has_duplicates' => $has_duplicates,
         ];
     }

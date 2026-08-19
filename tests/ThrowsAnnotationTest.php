@@ -177,6 +177,30 @@ final class ThrowsAnnotationTest extends TestCase
         $this->analyzeFile('somefile.php', $context);
     }
 
+    public function testReportsDescribedOverlyBroadThrowsDocblock(): void
+    {
+        $this->expectExceptionMessage('OverlyBroadThrowsDocblock');
+        $this->expectException(CodeException::class);
+        Config::getInstance()->check_for_throws_docblock = true;
+        Config::getInstance()->setCustomErrorLevel('OverlyBroadThrowsDocblock', Config::REPORT_ERROR);
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                class ApplicationException extends Exception {}
+                class InvalidApplicationState extends ApplicationException {}
+
+                /** @throws ApplicationException when application state is invalid */
+                function foo(): void {
+                    throw new InvalidApplicationState();
+                }',
+        );
+
+        $context = new Context();
+
+        $this->analyzeFile('somefile.php', $context);
+    }
+
     public function testDoesNotReportOverlyBroadThrowsDocblockWhenParentCanBeThrown(): void
     {
         Config::getInstance()->check_for_throws_docblock = true;

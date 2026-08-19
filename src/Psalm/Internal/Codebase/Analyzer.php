@@ -332,13 +332,13 @@ final class Analyzer
     {
         foreach (ClassLikeStorageProvider::getAll() as $classlike_storage) {
             foreach ($classlike_storage->methods as $method_storage) {
-                $method_storage->inferred_throws = [];
+                $method_storage->inferred_throws = null;
             }
         }
 
         foreach (FileStorageProvider::getAll() as $file_storage) {
             foreach ($file_storage->functions as $function_storage) {
-                $function_storage->inferred_throws = [];
+                $function_storage->inferred_throws = null;
             }
         }
     }

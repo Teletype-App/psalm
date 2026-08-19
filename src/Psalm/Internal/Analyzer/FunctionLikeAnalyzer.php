@@ -81,6 +81,7 @@ use UnexpectedValueException;
 use function array_combine;
 use function array_diff_key;
 use function array_fill_keys;
+use function array_intersect_key;
 use function array_key_exists;
 use function array_keys;
 use function array_merge;
@@ -818,7 +819,11 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             $this->function->getDocComment(),
         );
         $documented_throws = $storage->throws + $documented_throws_analysis['documented_throws'];
-        $uncaught_throws = $statements_analyzer->getUncaughtThrows($context);
+        [$uncaught_throws, $uncaught_throw_origins] = self::normalizeUncaughtThrows(
+            $codebase,
+            $context,
+            $statements_analyzer->getUncaughtThrows($context),
+        );
         if ($codebase->config->check_for_throws_docblock
             && (!$codebase->alter_code
                 || isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock']))
@@ -839,8 +844,15 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 }
 
                 $is_expected = false;
+                $is_exactly_documented = false;
+                $requires_exact_documentation = ($uncaught_throw_origins[$possibly_thrown_exception]
+                    & (ThrownExceptionOrigin::DIRECT | ThrownExceptionOrigin::NARROWED_RETHROW)) !== 0;
 
                 foreach ($documented_throws as $expected_exception => $_) {
+                    if (strtolower($possibly_thrown_exception) === strtolower($expected_exception)) {
+                        $is_exactly_documented = true;
+                    }
+
                     if (self::isExceptionDocumented(
                         $codebase,
                         $context,
@@ -856,13 +868,21 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                         }
 
                         $is_expected = true;
-                        break;
+                        if ($is_exactly_documented || !$requires_exact_documentation) {
+                            break;
+                        }
                     }
                 }
 
-                if (!$is_expected) {
+                $should_add_exact_documentation = $requires_exact_documentation
+                    && !$is_exactly_documented
+                    && $codebase->alter_code
+                    && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock']);
+                if (!$is_expected || $should_add_exact_documentation) {
                     $missingThrowsDocblockExceptions[] = new TNamedObject($possibly_thrown_exception);
+                }
 
+                if (!$is_expected) {
                     foreach ($codelocations as $codelocation) {
                         // issues are suppressed in ThrowAnalyzer, CallAnalyzer, etc.
                         IssueBuffer::maybeAdd(
@@ -911,7 +931,9 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                     $documented_exception,
                 );
 
-                if (!IssueBuffer::isSuppressed($issue, $storage->suppressed_issues)) {
+                if (!IssueBuffer::isSuppressed($issue, $storage->suppressed_issues)
+                    && !isset($documented_throws_analysis['described_throws'][$documented_exception])
+                ) {
                     $documented_throw_names =
                         $documented_throws_analysis['documented_throw_names'][$documented_exception];
                     foreach ($documented_throw_names as $throw_name) {
@@ -1001,7 +1023,9 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                         $documented_exception,
                     );
 
-                    if (!IssueBuffer::isSuppressed($issue, $storage->suppressed_issues)) {
+                    if (!IssueBuffer::isSuppressed($issue, $storage->suppressed_issues)
+                        && !isset($documented_throws_analysis['described_throws'][$documented_exception])
+                    ) {
                         $documented_throw_names =
                             $documented_throws_analysis['documented_throw_names'][$documented_exception];
                         foreach ($documented_throw_names as $throw_name) {
@@ -1028,12 +1052,15 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             );
         }
 
+        $function_start_line = $this->function->getDocComment()?->getStartLine()
+            ?? $this->function->getStartLine();
+
         if (($missingThrowsDocblockErrors !== [] || $documented_throws_analysis['has_duplicates'])
             && $codebase->alter_code
             && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
             && $project_analyzer->canFixFunctionLike(
                 $this->getFilePath(),
-                $this->function->getStartLine(),
+                $function_start_line,
                 $this->function->getEndLine(),
             )
             && !$this->function instanceof VirtualNode
@@ -1055,7 +1082,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             && isset($project_analyzer->getIssuesToFix()['UnusedThrowsDocblock'])
             && $project_analyzer->canFixFunctionLike(
                 $this->getFilePath(),
-                $this->function->getStartLine(),
+                $function_start_line,
                 $this->function->getEndLine(),
             )
             && !$this->function instanceof VirtualNode
@@ -1073,7 +1100,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             && isset($project_analyzer->getIssuesToFix()['OverlyBroadThrowsDocblock'])
             && $project_analyzer->canFixFunctionLike(
                 $this->getFilePath(),
-                $this->function->getStartLine(),
+                $function_start_line,
                 $this->function->getEndLine(),
             )
             && !$this->function instanceof VirtualNode
@@ -2564,6 +2591,63 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                     || $codebase->classExtendsOrImplements($possibly_thrown_exception, $documented_exception)
                 )
             );
+    }
+
+    /**
+     * Direct throws and narrowed rethrows are part of the method's own contract. Propagated exceptions are
+     * implementation details and can be represented by a broader exception already present in the contract.
+     *
+     * @param array<string, array<array-key, CodeLocation>> $uncaught_throws
+     * @return array{array<string, array<array-key, CodeLocation>>, array<string, int>}
+     * @psalm-external-mutation-free
+     */
+    private static function normalizeUncaughtThrows(
+        Codebase $codebase,
+        Context $context,
+        array $uncaught_throws,
+    ): array {
+        $direct_throws = [];
+        $narrowed_rethrows = [];
+        $propagated_throws = [];
+        $origins = [];
+
+        foreach ($uncaught_throws as $exception => $locations) {
+            $origin = 0;
+            foreach ($locations as $hash => $_) {
+                $origin |= $context->possibly_thrown_exception_origins[$exception][$hash]
+                    ?? ThrownExceptionOrigin::PROPAGATED;
+            }
+
+            $origins[$exception] = $origin;
+            if (($origin & ThrownExceptionOrigin::DIRECT) !== 0) {
+                $direct_throws[$exception] = $locations;
+            } elseif (($origin & ThrownExceptionOrigin::NARROWED_RETHROW) !== 0) {
+                $narrowed_rethrows[$exception] = $locations;
+            } else {
+                $propagated_throws[$exception] = $locations;
+            }
+        }
+
+        $contract_throws = $direct_throws + $narrowed_rethrows;
+        foreach ($propagated_throws as $exception => $locations) {
+            foreach ($contract_throws as $contract_exception => $_) {
+                if (self::isExceptionDocumented($codebase, $context, $exception, $contract_exception)) {
+                    continue 2;
+                }
+            }
+
+            foreach ($propagated_throws as $other_exception => $_) {
+                if (strtolower($exception) !== strtolower($other_exception)
+                    && self::isExceptionDocumented($codebase, $context, $exception, $other_exception)
+                ) {
+                    continue 2;
+                }
+            }
+
+            $contract_throws[$exception] = $locations;
+        }
+
+        return [$contract_throws, array_intersect_key($origins, $contract_throws)];
     }
 
     /**

@@ -173,6 +173,55 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertStringNotContainsString('@throws LogicException', $contents);
     }
 
+    public function testPsalterTreatsChangedDocblockAsChangedFunction(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                /** Initial description */
+                function changed(): void
+                {
+                    throw new \RuntimeException();
+                }
+                PHP,
+        );
+
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'psalm.xml', 'src/FileWithErrors.php'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        file_put_contents($file_path, str_replace('Initial description', 'Changed description', $contents));
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--changed',
+            '--issues=MissingThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+    }
+
     public function testInit(): void
     {
         $this->assertStringStartsWith(
@@ -431,6 +480,69 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertSame($contents, file_get_contents($selectedFile));
     }
 
+    public function testPsalterConvergesAfterRemovingCalleeThrows(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class SelectedFile
+                {
+                    private int $calls = 0;
+
+                    /**
+                     * @throws RuntimeException
+                     * @psalm-external-mutation-free
+                     */
+                    public function execute(): void
+                    {
+                        $this->doNothing();
+                    }
+
+                    /**
+                     * @throws RuntimeException
+                     * @psalm-external-mutation-free
+                     */
+                    private function doNothing(): void
+                    {
+                        $this->calls++;
+                    }
+                }
+                PHP,
+        );
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $contents = file_get_contents($selectedFile);
+        $this->assertIsString($contents);
+        $this->assertStringNotContainsString('@throws', $contents);
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($contents, file_get_contents($selectedFile));
+    }
+
     public function testPsalterUsesConfiguredThrowsImportAlias(): void
     {
         $this->runPsalmInit();
@@ -534,7 +646,10 @@ final class PsalmEndToEndTest extends TestCase
                     $this->fail();
                 }
 
-                /** @throws Exception */
+                /**
+                 * @throws Exception
+                 * @throws InvalidArgumentException
+                 */
                 private function fail(): void
                 {
                     throw new InvalidArgumentException();

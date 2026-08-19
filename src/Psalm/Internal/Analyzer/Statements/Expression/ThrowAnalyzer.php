@@ -9,6 +9,7 @@ use Psalm\CodeLocation;
 use Psalm\Context;
 use Psalm\Internal\Analyzer\Statements\ExpressionAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
+use Psalm\Internal\Analyzer\ThrownExceptionOrigin;
 use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Issue\InvalidThrow;
 use Psalm\IssueBuffer;
@@ -79,6 +80,10 @@ final class ThrowAnalyzer
                     foreach ($throw_type->getAtomicTypes() as $throw_atomic_type) {
                         if ($throw_atomic_type instanceof TNamedObject) {
                             $context->possibly_thrown_exceptions[$throw_atomic_type->value][$hash] = $codelocation;
+                            $context->possibly_thrown_exception_origins[$throw_atomic_type->value][$hash] =
+                                $stmt->expr instanceof PhpParser\Node\Expr\New_
+                                    ? ThrownExceptionOrigin::DIRECT
+                                    : ThrownExceptionOrigin::PROPAGATED;
                         }
                     }
                 }

@@ -30,7 +30,7 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['UnusedThrowsDocblock'],
                 'safe_types' => true,
             ],
-            'removeUnusedExceptionFromThrowsUnion' => [
+            'preserveDescribedThrowsUnionWhenPartIsUnused' => [
                 'input' => '<?php
                     /**
                      * @throws InvalidArgumentException|DomainException when the value is invalid
@@ -40,7 +40,7 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     /**
-                     * @throws DomainException when the value is invalid
+                     * @throws InvalidArgumentException|DomainException when the value is invalid
                      */
                     function foo(): void {
                         throw new DomainException();
@@ -68,7 +68,28 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock', 'UnusedThrowsDocblock'],
                 'safe_types' => true,
             ],
-            'narrowCustomParentThrowsAnnotation' => [
+            'preserveDescribedCustomParentThrowsAnnotation' => [
+                'input' => '<?php
+                    class ApplicationException extends Exception {}
+                    class InvalidApplicationState extends ApplicationException {}
+
+                    /** @throws ApplicationException when application state is invalid */
+                    function foo(): void {
+                        throw new InvalidApplicationState();
+                    }',
+                'output' => '<?php
+                    class ApplicationException extends Exception {}
+                    class InvalidApplicationState extends ApplicationException {}
+
+                    /** @throws ApplicationException when application state is invalid */
+                    function foo(): void {
+                        throw new InvalidApplicationState();
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'addDirectThrowWithoutRewritingDescribedParentAnnotation' => [
                 'input' => '<?php
                     class ApplicationException extends Exception {}
                     class InvalidApplicationState extends ApplicationException {}
@@ -82,13 +103,14 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     class InvalidApplicationState extends ApplicationException {}
 
                     /**
-                     * @throws InvalidApplicationState when application state is invalid
+                     * @throws ApplicationException when application state is invalid
+                     * @throws InvalidApplicationState
                      */
                     function foo(): void {
                         throw new InvalidApplicationState();
                     }',
                 'php_version' => '7.4',
-                'issues_to_fix' => ['OverlyBroadThrowsDocblock'],
+                'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
             'narrowThrowsAnnotationToMultipleInferredExceptions' => [
@@ -211,7 +233,58 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
-            'removeBroadThrowsCoveredByNarrowerAnnotation' => [
+            'preserveDirectAndNarrowedThrowsButCollapsePropagatedSubtype' => [
+                'input' => '<?php
+                    class ApiException extends Exception {}
+                    class ExternalServiceOperationError extends ApiException {}
+                    class ValidateException extends ApiException {}
+
+                    class Service {
+                        /** @throws ExternalServiceOperationError */
+                        public function execute(): void {}
+                    }
+
+                    function foo(Service $service): void {
+                        try {
+                            $service->execute();
+                        } catch (Throwable $throwable) {
+                            if ($throwable instanceof ApiException) {
+                                throw $throwable;
+                            }
+
+                            throw new ValidateException();
+                        }
+                    }',
+                'output' => '<?php
+                    class ApiException extends Exception {}
+                    class ExternalServiceOperationError extends ApiException {}
+                    class ValidateException extends ApiException {}
+
+                    class Service {
+                        /** @throws ExternalServiceOperationError */
+                        public function execute(): void {}
+                    }
+
+                    /**
+                     * @throws ApiException
+                     * @throws ValidateException
+                     */
+                    function foo(Service $service): void {
+                        try {
+                            $service->execute();
+                        } catch (Throwable $throwable) {
+                            if ($throwable instanceof ApiException) {
+                                throw $throwable;
+                            }
+
+                            throw new ValidateException();
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'preserveDescribedBroadThrowsCoveredByNarrowerAnnotation' => [
                 'input' => '<?php
                     /**
                      * @throws Exception generic failure
@@ -222,6 +295,7 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     /**
+                     * @throws Exception generic failure
                      * @throws RuntimeException runtime failure
                      */
                     function foo(): void {
@@ -484,7 +558,7 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
-            'preserveCompleteInferredThrowsHierarchy' => [
+            'collapsePropagatedThrowsHierarchy' => [
                 'input' => '<?php
                     /** @throws \Exception */
                     function throwsException(): void {}
@@ -511,8 +585,6 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     function throwsRuntimeException(): void {}
 
                     /**
-                     * @throws Exception
-                     * @throws RuntimeException
                      * @throws Throwable
                      */
                     function foo(): void {
@@ -623,12 +695,14 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'output' => '<?php
                     namespace Foo;
                     use Exception;
+                    use RuntimeException;
                     class SomeClass {
                         /**
                          * @return void
                          * @return void
                          *
                          * @throws Exception
+                         * @throws RuntimeException
                          */
                         public function foo(): void {
                             throw new \RuntimeException();

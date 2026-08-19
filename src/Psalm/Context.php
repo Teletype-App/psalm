@@ -6,6 +6,7 @@ namespace Psalm;
 
 use InvalidArgumentException;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
+use Psalm\Internal\Analyzer\ThrownExceptionOrigin;
 use Psalm\Internal\Clause;
 use Psalm\Internal\ReferenceConstraint;
 use Psalm\Internal\Scope\CaseScope;
@@ -256,6 +257,13 @@ final class Context
      * @var array<string, array<array-key, CodeLocation>>
      */
     public array $possibly_thrown_exceptions = [];
+
+    /**
+     * Origins for the exception locations stored in possibly_thrown_exceptions.
+     *
+     * @var array<string, array<array-key, int>>
+     */
+    public array $possibly_thrown_exception_origins = [];
 
     public bool $is_global = false;
 
@@ -855,6 +863,10 @@ final class Context
         foreach ($other_context->possibly_thrown_exceptions as $possibly_thrown_exception => $codelocations) {
             foreach ($codelocations as $hash => $codelocation) {
                 $this->possibly_thrown_exceptions[$possibly_thrown_exception][$hash] = $codelocation;
+                $origin = $other_context->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash]
+                    ?? ThrownExceptionOrigin::PROPAGATED;
+                $this->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash] =
+                    ($this->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash] ?? 0) | $origin;
             }
         }
     }
@@ -892,9 +904,11 @@ final class Context
         CodeLocation $codelocation,
     ): void {
         $hash = $codelocation->getHash();
-        $throws = $function_storage->inferred_throws ?: $function_storage->throws;
+        $throws = $function_storage->inferred_throws ?? $function_storage->throws;
         foreach ($throws as $possibly_thrown_exception => $_) {
             $this->possibly_thrown_exceptions[$possibly_thrown_exception][$hash] = $codelocation;
+            $this->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash] =
+                ThrownExceptionOrigin::PROPAGATED;
         }
     }
 
