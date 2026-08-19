@@ -92,6 +92,7 @@ use function json_decode;
 use function libxml_clear_errors;
 use function libxml_get_errors;
 use function libxml_use_internal_errors;
+use function ltrim;
 use function max;
 use function mkdir;
 use function phpversion;
@@ -378,6 +379,11 @@ final class Config
      * @var array<string, bool>
      */
     public array $ignored_exceptions_and_descendants_in_global_scope = [];
+
+    /**
+     * @var array<lowercase-string, string>
+     */
+    public array $throws_import_aliases = [];
 
     public bool $infer_property_types_from_constructor = true;
 
@@ -1361,6 +1367,13 @@ final class Config
                     }
                     $config->ignored_exceptions_and_descendants_in_global_scope[$exception_name] = true;
                 }
+            }
+        }
+
+        if (isset($config_xml->throwsImportAliases->class)) {
+            foreach ($config_xml->throwsImportAliases->class as $class) {
+                $class_name = ltrim((string) $class['name'], '\\');
+                $config->throws_import_aliases[strtolower($class_name)] = (string) $class['alias'];
             }
         }
 

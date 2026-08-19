@@ -154,6 +154,8 @@ final class ThrowsDocblockImportResolver
 
             $short_name = self::getShortName($fq_class_name);
             $short_name_lc = strtolower($short_name);
+            $preferred_alias = $source->getCodebase()->config->throws_import_aliases[$fq_class_name_lc] ?? null;
+            $preferred_alias_lc = strtolower($preferred_alias ?? '');
             $class_in_current_namespace = $namespace !== null
                 && strtolower($namespace . '\\' . $short_name) === $fq_class_name_lc;
             $global_class_in_global_namespace = $namespace === null && !str_contains($fq_class_name, '\\');
@@ -161,17 +163,19 @@ final class ThrowsDocblockImportResolver
 
             if ($class_in_current_namespace || $global_class_in_global_namespace) {
                 $annotation_names[] = $short_name;
+            } elseif ($preferred_alias !== null
+                && $preferred_alias_lc !== ''
+                && !isset($reserved_aliases[$preferred_alias_lc])
+            ) {
+                $annotation_names[] = $preferred_alias;
+                $imports[$fq_class_name_lc] = $fq_class_name . ' as ' . $preferred_alias;
+                $reserved_aliases[$preferred_alias_lc] = $fq_class_name_lc;
             } elseif ($alias_is_available) {
                 $annotation_names[] = $short_name;
                 $imports[$fq_class_name_lc] = $fq_class_name;
                 $reserved_aliases[$short_name_lc] = $fq_class_name_lc;
             } else {
-                $annotation_names[] = $exception->toNamespacedString(
-                    $namespace,
-                    $aliased_classes_flipped,
-                    $source->getFQCLN(),
-                    true,
-                );
+                $annotation_names[] = '\\' . $fq_class_name;
             }
         }
 

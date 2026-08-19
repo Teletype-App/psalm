@@ -799,6 +799,36 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'keepFullyQualifiedThrowsAnnotationWhenNamespacePrefixAliasConflicts' => [
+                'input' => '<?php
+                    namespace yii\base {
+                        class Exception extends \Exception {}
+                    }
+                    namespace App {
+                        use DomainException as Exception;
+                        use Yii;
+                        function foo(): void {
+                            throw new \yii\base\Exception();
+                        }
+                    }',
+                'output' => '<?php
+                    namespace yii\base {
+                        class Exception extends \Exception {}
+                    }
+                    namespace App {
+                        use DomainException as Exception;
+                        use Yii;
+                        /**
+                         * @throws \yii\base\Exception
+                         */
+                        function foo(): void {
+                            throw new \yii\base\Exception();
+                        }
+                    }',
+                'php_version' => '7.4',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'keepFullyQualifiedThrowsAnnotationsWhenAddedImportsConflict' => [
                 'input' => '<?php
                     namespace App {

@@ -1902,6 +1902,26 @@ final class ConfigTest extends TestCase
         $this->assertFalse($config->reportIssueInFile('MissingReturnType', (string) realpath('src/Psalm/Internal/Type/TypeAlias/ClassTypeAlias.php')));
     }
 
+    public function testThrowsImportAliases(): void
+    {
+        $config = Config::loadFromXML(
+            (string) getcwd(),
+            <<<'XML'
+                <?xml version="1.0"?>
+                <psalm>
+                    <throwsImportAliases>
+                        <class name="yii\base\Exception" alias="BaseException"/>
+                    </throwsImportAliases>
+                </psalm>
+                XML,
+        );
+
+        $this->assertSame(
+            ['yii\base\exception' => 'BaseException'],
+            $config->throws_import_aliases,
+        );
+    }
+
     /**
      * @requires extension apcu
      * @deprecated Remove in Psalm 6.

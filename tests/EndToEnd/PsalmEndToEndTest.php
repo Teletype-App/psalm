@@ -431,6 +431,67 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertSame($contents, file_get_contents($selectedFile));
     }
 
+    public function testPsalterUsesConfiguredThrowsImportAlias(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        $psalmXml = str_replace(
+            '</psalm>',
+            <<<'XML'
+                <throwsImportAliases>
+                    <class name="yii\base\Exception" alias="BaseException"/>
+                </throwsImportAliases>
+                </psalm>
+                XML,
+            $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace yii\base {
+                    class Exception extends \Exception {}
+                }
+
+                namespace App {
+                    use DomainException as Exception;
+                    use Yii;
+
+                    /** @psalm-pure */
+                    function execute(): void
+                    {
+                        throw new \yii\base\Exception();
+                    }
+                }
+                PHP,
+        );
+
+        $this->runPsalm(
+            [
+                '--alter',
+                '--php-version=8.3',
+                '--issues=MissingThrowsDocblock',
+                $selectedFile,
+            ],
+            self::$tmpDir,
+        );
+
+        $contents = file_get_contents($selectedFile);
+        $this->assertIsString($contents);
+        $this->assertStringContainsString('use yii\base\Exception as BaseException;', $contents);
+        $this->assertStringContainsString('@throws BaseException', $contents);
+    }
+
     public function testPsalterKeepsThrowsDocumentedByMultipleCallersOfPrivateMethod(): void
     {
         $this->runPsalmInit();

@@ -20,6 +20,7 @@
             <xs:element name="forbiddenConstants" type="ConstantType" minOccurs="0" maxOccurs="1" />
             <xs:element name="issueHandlers" type="IssueHandlersType" minOccurs="0" maxOccurs="1" />
             <xs:element name="ignoreExceptions" type="ExceptionsType" minOccurs="0" maxOccurs="1" />
+            <xs:element name="throwsImportAliases" type="ImportAliasesType" minOccurs="0" maxOccurs="1" />
             <xs:element name="globals" type="GlobalsType" minOccurs="0" maxOccurs="1" />
             <xs:element name="universalObjectCrates" type="UniversalObjectCratesType" minOccurs="0" maxOccurs="1" />
             <xs:element name="enableExtensions" type="ExtensionsType" minOccurs="0" maxOccurs="1" />
@@ -172,6 +173,19 @@
             <xs:element name="class" minOccurs="0" maxOccurs="unbounded" type="ExceptionType" />
             <xs:element name="classAndDescendants" minOccurs="0" maxOccurs="unbounded" type="ExceptionType" />
         </xs:sequence>
+        <xs:anyAttribute processContents="skip" />
+    </xs:complexType>
+
+    <xs:complexType name="ImportAliasesType">
+        <xs:sequence>
+            <xs:element name="class" minOccurs="0" maxOccurs="unbounded" type="ImportAliasType" />
+        </xs:sequence>
+        <xs:anyAttribute processContents="skip" />
+    </xs:complexType>
+
+    <xs:complexType name="ImportAliasType">
+        <xs:attribute name="name" type="xs:string" use="required" />
+        <xs:attribute name="alias" type="xs:string" use="required" />
         <xs:anyAttribute processContents="skip" />
     </xs:complexType>
 

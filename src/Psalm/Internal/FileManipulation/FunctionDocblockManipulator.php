@@ -35,6 +35,7 @@ use function str_replace;
 use function str_split;
 use function strlen;
 use function strpos;
+use function strripos;
 use function strrpos;
 use function strtolower;
 use function substr;
@@ -821,7 +822,7 @@ final class FunctionDocblockManipulator
 
             foreach ($this->throwsExceptions as $offset => $exception) {
                 if ($exception === $short_name) {
-                    $this->throwsExceptions[$offset] = '\\' . $import;
+                    $this->throwsExceptions[$offset] = '\\' . self::getImportedClassName($import);
                 }
             }
 
@@ -829,7 +830,7 @@ final class FunctionDocblockManipulator
                 $qualified_replacement_exceptions = [];
                 foreach ($replacement_exceptions as $exception) {
                     $qualified_replacement_exceptions[] = $exception === $short_name
-                        ? '\\' . $import
+                        ? '\\' . self::getImportedClassName($import)
                         : $exception;
                 }
 
@@ -970,9 +971,22 @@ final class FunctionDocblockManipulator
     /** @psalm-pure */
     private static function getClassShortName(string $fq_class_name): string
     {
+        $alias_position = strripos($fq_class_name, ' as ');
+        if ($alias_position !== false) {
+            return substr($fq_class_name, $alias_position + 4);
+        }
+
         $separator_position = strrpos($fq_class_name, '\\');
 
         return $separator_position === false ? $fq_class_name : substr($fq_class_name, $separator_position + 1);
+    }
+
+    /** @psalm-pure */
+    private static function getImportedClassName(string $import): string
+    {
+        $alias_position = strripos($import, ' as ');
+
+        return $alias_position === false ? $import : substr($import, 0, $alias_position);
     }
 
     /**
