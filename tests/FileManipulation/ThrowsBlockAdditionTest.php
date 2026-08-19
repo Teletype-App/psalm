@@ -113,6 +113,120 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
+            'treatFluentExceptionConstructionAsDirectThrow' => [
+                'input' => '<?php
+                    class ApiException extends Exception {}
+                    class BadRequestExceptionWithContext extends ApiException {
+                        public function withContext(): self {
+                            return $this;
+                        }
+                    }
+
+                    /** @throws ApiException */
+                    function foo(): void {
+                        throw (new BadRequestExceptionWithContext())->withContext();
+                    }',
+                'output' => '<?php
+                    class ApiException extends Exception {}
+                    class BadRequestExceptionWithContext extends ApiException {
+                        public function withContext(): self {
+                            return $this;
+                        }
+                    }
+
+                    /**
+                     * @throws ApiException
+                     * @throws BadRequestExceptionWithContext
+                     */
+                    function foo(): void {
+                        throw (new BadRequestExceptionWithContext())->withContext();
+                    }',
+                'php_version' => '8.1',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'preserveFluentDirectThrowThroughNarrowedRethrow' => [
+                'input' => '<?php
+                    class ApiException extends Exception {}
+                    class BadRequestException extends ApiException {}
+                    class BadRequestExceptionWithContext extends BadRequestException {
+                        public function withContext(): self {
+                            return $this;
+                        }
+                    }
+
+                    /** @throws ApiException */
+                    function foo(): void {
+                        try {
+                            throw (new BadRequestExceptionWithContext())->withContext();
+                        } catch (Throwable $throwable) {
+                            if ($throwable instanceof ApiException) {
+                                throw $throwable;
+                            }
+
+                            throw new BadRequestException();
+                        }
+                    }',
+                'output' => '<?php
+                    class ApiException extends Exception {}
+                    class BadRequestException extends ApiException {}
+                    class BadRequestExceptionWithContext extends BadRequestException {
+                        public function withContext(): self {
+                            return $this;
+                        }
+                    }
+
+                    /**
+                     * @throws ApiException
+                     * @throws BadRequestException
+                     * @throws BadRequestExceptionWithContext
+                     */
+                    function foo(): void {
+                        try {
+                            throw (new BadRequestExceptionWithContext())->withContext();
+                        } catch (Throwable $throwable) {
+                            if ($throwable instanceof ApiException) {
+                                throw $throwable;
+                            }
+
+                            throw new BadRequestException();
+                        }
+                    }',
+                'php_version' => '8.1',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'doesNotTreatExceptionCreatedByFactoryAsDirectThrow' => [
+                'input' => '<?php
+                    class ApiException extends Exception {}
+                    class BadRequestException extends ApiException {}
+                    class ExceptionFactory {
+                        public function create(): BadRequestException {
+                            return new BadRequestException();
+                        }
+                    }
+
+                    /** @throws ApiException */
+                    function foo(): void {
+                        throw (new ExceptionFactory())->create();
+                    }',
+                'output' => '<?php
+                    class ApiException extends Exception {}
+                    class BadRequestException extends ApiException {}
+                    class ExceptionFactory {
+                        public function create(): BadRequestException {
+                            return new BadRequestException();
+                        }
+                    }
+
+                    /** @throws ApiException */
+                    function foo(): void {
+                        throw (new ExceptionFactory())->create();
+                    }',
+                'php_version' => '8.1',
+                'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
             'narrowThrowsAnnotationToMultipleInferredExceptions' => [
                 'input' => '<?php
                     /** @throws Exception */

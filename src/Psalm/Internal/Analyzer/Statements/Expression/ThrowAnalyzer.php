@@ -17,6 +17,10 @@ use Psalm\Type;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Union;
 
+use function count;
+use function reset;
+use function strtolower;
+
 /**
  * @internal
  */
@@ -81,7 +85,7 @@ final class ThrowAnalyzer
                         if ($throw_atomic_type instanceof TNamedObject) {
                             $context->possibly_thrown_exceptions[$throw_atomic_type->value][$hash] = $codelocation;
                             $context->possibly_thrown_exception_origins[$throw_atomic_type->value][$hash] =
-                                $stmt->expr instanceof PhpParser\Node\Expr\New_
+                                self::isDirectThrow($statements_analyzer, $stmt->expr, $throw_atomic_type)
                                     ? ThrownExceptionOrigin::DIRECT
                                     : ThrownExceptionOrigin::PROPAGATED;
                         }
@@ -93,5 +97,34 @@ final class ThrowAnalyzer
         $statements_analyzer->node_data->setType($stmt, Type::getNever());
 
         return true;
+    }
+
+    private static function isDirectThrow(
+        StatementsAnalyzer $statements_analyzer,
+        PhpParser\Node\Expr $throw_expression,
+        TNamedObject $throw_type,
+    ): bool {
+        while ($throw_expression instanceof PhpParser\Node\Expr\MethodCall) {
+            $throw_expression = $throw_expression->var;
+        }
+
+        if (!$throw_expression instanceof PhpParser\Node\Expr\New_) {
+            return false;
+        }
+
+        $new_type = $statements_analyzer->node_data->getType($throw_expression);
+        if ($new_type === null || $new_type->hasMixed()) {
+            return false;
+        }
+
+        $new_atomic_types = $new_type->getAtomicTypes();
+        if (count($new_atomic_types) !== 1) {
+            return false;
+        }
+
+        $new_atomic_type = reset($new_atomic_types);
+
+        return $new_atomic_type instanceof TNamedObject
+            && strtolower($new_atomic_type->value) === strtolower($throw_type->value);
     }
 }
