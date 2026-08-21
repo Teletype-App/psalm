@@ -841,7 +841,7 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                 'issues_to_fix' => ['MissingThrowsDocblock'],
                 'safe_types' => true,
             ],
-            'collapsePropagatedThrowsHierarchy' => [
+            'preserveCompletePropagatedThrowsHierarchy' => [
                 'input' => '<?php
                     /** @throws \Exception */
                     function throwsException(): void {}
@@ -868,6 +868,8 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     function throwsRuntimeException(): void {}
 
                     /**
+                     * @throws Exception
+                     * @throws RuntimeException
                      * @throws Throwable
                      */
                     function foo(): void {

@@ -1024,6 +1024,68 @@ final class PsalmEndToEndTest extends TestCase
         }
     }
 
+    public function testPsalterPreservesConcretePropagatedThrowAlongsideThrowable(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/Task.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use Exception;
+                use Throwable;
+
+                class ServerException extends Exception {}
+
+                final class Service
+                {
+                    /** @throws Throwable */
+                    public function execute(): void
+                    {
+                        throw new ServerException();
+                    }
+                }
+
+                final class Task
+                {
+                    /** @throws Throwable */
+                    public function estimate(Service $service): void
+                    {
+                        $service->execute();
+                    }
+                }
+                PHP,
+        );
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+
+        $contents = (string) file_get_contents($selectedFile);
+        $this->assertSame(2, substr_count($contents, '@throws ServerException'));
+        $this->assertSame(2, substr_count($contents, '@throws Throwable'));
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+        $this->assertSame($contents, file_get_contents($selectedFile));
+    }
+
     public function testPsalmPropagatesInferredThrowsToAllSelectedCallers(): void
     {
         $this->runPsalmInit();
