@@ -1177,48 +1177,60 @@ final class StatementsAnalyzer extends SourceAnalyzer
      */
     public function getUncaughtThrows(Context $context): array
     {
+        return $context->collect_exceptions
+            ? $this->filterIgnoredExceptions($context->possibly_thrown_exceptions, $context)
+            : [];
+    }
+
+    /**
+     * @template T
+     * @param array<string, T> $exceptions
+     * @return array<string, T>
+     * @psalm-mutation-free
+     */
+    public function filterIgnoredExceptions(array $exceptions, Context $context): array
+    {
+        if ($exceptions === []) {
+            return [];
+        }
+
         $uncaught_throws = [];
+        $config = $this->codebase->config;
+        $ignored_exceptions = array_change_key_case(
+            $context->is_global ?
+                $config->ignored_exceptions_in_global_scope :
+                $config->ignored_exceptions,
+        );
+        $ignored_exceptions_and_descendants = array_change_key_case(
+            $context->is_global ?
+                $config->ignored_exceptions_and_descendants_in_global_scope :
+                $config->ignored_exceptions_and_descendants,
+        );
 
-        if ($context->collect_exceptions) {
-            if ($context->possibly_thrown_exceptions) {
-                $config = $this->codebase->config;
-                $ignored_exceptions = array_change_key_case(
-                    $context->is_global ?
-                        $config->ignored_exceptions_in_global_scope :
-                        $config->ignored_exceptions,
-                );
-                $ignored_exceptions_and_descendants = array_change_key_case(
-                    $context->is_global ?
-                        $config->ignored_exceptions_and_descendants_in_global_scope :
-                        $config->ignored_exceptions_and_descendants,
-                );
+        foreach ($exceptions as $possibly_thrown_exception => $value) {
+            if (isset($ignored_exceptions[strtolower($possibly_thrown_exception)])) {
+                continue;
+            }
 
-                foreach ($context->possibly_thrown_exceptions as $possibly_thrown_exception => $codelocations) {
-                    if (isset($ignored_exceptions[strtolower($possibly_thrown_exception)])) {
-                        continue;
+            $is_expected = false;
+
+            foreach ($ignored_exceptions_and_descendants as $expected_exception => $_) {
+                try {
+                    if ($expected_exception === strtolower($possibly_thrown_exception)
+                        || $this->codebase->classExtends($possibly_thrown_exception, $expected_exception)
+                        || $this->codebase->interfaceExtends($possibly_thrown_exception, $expected_exception)
+                    ) {
+                        $is_expected = true;
+                        break;
                     }
-
-                    $is_expected = false;
-
-                    foreach ($ignored_exceptions_and_descendants as $expected_exception => $_) {
-                        try {
-                            if ($expected_exception === strtolower($possibly_thrown_exception)
-                                || $this->codebase->classExtends($possibly_thrown_exception, $expected_exception)
-                                || $this->codebase->interfaceExtends($possibly_thrown_exception, $expected_exception)
-                            ) {
-                                $is_expected = true;
-                                break;
-                            }
-                        } catch (InvalidArgumentException) {
-                            $is_expected = true;
-                            break;
-                        }
-                    }
-
-                    if (!$is_expected) {
-                        $uncaught_throws[$possibly_thrown_exception] = $codelocations;
-                    }
+                } catch (InvalidArgumentException) {
+                    $is_expected = true;
+                    break;
                 }
+            }
+
+            if (!$is_expected) {
+                $uncaught_throws[$possibly_thrown_exception] = $value;
             }
         }
 

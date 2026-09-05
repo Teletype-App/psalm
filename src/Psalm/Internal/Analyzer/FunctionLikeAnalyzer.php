@@ -901,9 +901,15 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             && $codebase->config->check_for_throws_docblock
             && !($this->function instanceof ClassMethod && $this->function->stmts === null)
         ) {
-            foreach ($documented_throws_analysis['documented_throws'] as $documented_exception => $_) {
+            $documented_throws_to_check = $statements_analyzer->filterIgnoredExceptions(
+                $documented_throws_analysis['documented_throws'],
+                $context,
+            );
+
+            foreach ($documented_throws_to_check as $documented_exception => $_) {
                 $is_thrown = false;
-                foreach ($uncaught_throws as $possibly_thrown_exception => $_) {
+                // Ignoring an exception does not make an annotation covering it unused.
+                foreach ($context->possibly_thrown_exceptions as $possibly_thrown_exception => $_) {
                     if (self::isExceptionDocumented(
                         $codebase,
                         $context,
@@ -944,7 +950,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             ) || isset($project_analyzer->getIssuesToFix()['OverlyBroadThrowsDocblock']);
 
             if ($check_overly_broad_throws) {
-                foreach ($documented_throws_analysis['documented_throws'] as $documented_exception => $_) {
+                foreach ($documented_throws_to_check as $documented_exception => $_) {
                     $inferred_exception_names = [];
                     $is_exactly_thrown = false;
 

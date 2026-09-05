@@ -1494,7 +1494,7 @@ final class ConfigTest extends TestCase
 
                 class Exc2 extends Exception {}
                 /** @throws Exc2 */
-                function throwsExc2(): void {}
+                function throwsExc2(): void { throw new Exc2(); }
 
                 class Exc3 extends Exception {}
                 /** @throws Exc3 */
@@ -1502,7 +1502,7 @@ final class ConfigTest extends TestCase
 
                 class Exc4 extends Exception {}
                 /** @throws Exc4 */
-                function throwsExc4(): void {}
+                function throwsExc4(): void { throw new Exc4(); }
 
                 interface Exc5 {}
                 interface Exc6 extends Exc5 {}

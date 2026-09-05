@@ -334,6 +334,61 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertStringNotContainsString('@throws', $contents);
     }
 
+    public function testPsalterPreservesIgnoredThrowsAnnotations(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = (string) file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', $psalmXml);
+        $psalmXml = str_replace(
+            '</psalm>',
+            '<ignoreExceptions><class name="Exception" /><class name="RuntimeException" /></ignoreExceptions></psalm>',
+            $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                /**
+                 * @psalm-pure
+                 * @throws RuntimeException
+                 */
+                function ignoredUnused(): void {}
+
+                /**
+                 * @psalm-pure
+                 * @throws Exception
+                 */
+                function ignoredBroad(): void {
+                    throw new InvalidArgumentException();
+                }
+
+                /**
+                 * @psalm-pure
+                 * @throws LogicException
+                 */
+                function unused(): void {}
+                PHP,
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=UnusedThrowsDocblock,OverlyBroadThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->mustRun();
+
+        $output = (string) file_get_contents($file_path);
+        $this->assertStringContainsString('@throws RuntimeException', $output);
+        $this->assertStringContainsString('@throws Exception', $output);
+        $this->assertStringNotContainsString('@throws InvalidArgumentException', $output);
+        $this->assertStringNotContainsString('@throws LogicException', $output);
+    }
+
     public function testPsalterKeepsInterfaceThrowsAsContract(): void
     {
         $this->runPsalmInit();

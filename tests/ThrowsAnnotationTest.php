@@ -7,6 +7,7 @@ namespace Psalm\Tests;
 use Psalm\Config;
 use Psalm\Context;
 use Psalm\Exception\CodeException;
+use Psalm\Internal\Analyzer\InferredThrowsBuffer;
 
 final class ThrowsAnnotationTest extends TestCase
 {
@@ -252,10 +253,8 @@ final class ThrowsAnnotationTest extends TestCase
         $this->analyzeFile('somefile.php', $context);
     }
 
-    public function testReportsSpecificExceptionLostByRethrownThrowable(): void
+    public function testPreservesSpecificRethrownExceptionCoveredByThrowable(): void
     {
-        $this->expectExceptionMessage('RuntimeException is thrown but not caught');
-        $this->expectException(CodeException::class);
         Config::getInstance()->check_for_throws_docblock = true;
 
         $this->addFile(
@@ -281,6 +280,99 @@ final class ThrowsAnnotationTest extends TestCase
         $context = new Context();
 
         $this->analyzeFile('somefile.php', $context);
+
+        $inferred_throws = InferredThrowsBuffer::getAll();
+        $this->assertArrayHasKey('RuntimeException', $inferred_throws['foo']);
+        $this->assertArrayHasKey('Throwable', $inferred_throws['foo']);
+    }
+
+    /**
+     * @dataProvider providerIgnoredDocumentedExceptions
+     */
+    public function testIgnoredDocumentedExceptions(
+        string $ignored_exception,
+        bool $include_descendants,
+        bool $only_global_scope,
+        bool $expect_unused,
+    ): void {
+        $config = Config::getInstance();
+        $config->check_for_throws_docblock = true;
+        if ($include_descendants) {
+            $config->ignored_exceptions_and_descendants_in_global_scope = [$ignored_exception => true];
+            if (!$only_global_scope) {
+                $config->ignored_exceptions_and_descendants = [$ignored_exception => true];
+            }
+        } else {
+            $config->ignored_exceptions_in_global_scope = [$ignored_exception => true];
+            if (!$only_global_scope) {
+                $config->ignored_exceptions = [$ignored_exception => true];
+            }
+        }
+
+        if ($expect_unused) {
+            $this->expectException(CodeException::class);
+            $this->expectExceptionMessage('UnusedThrowsDocblock');
+        }
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /** @throws RuntimeException */
+                function foo(): void {}',
+        );
+        $this->analyzeFile('somefile.php', new Context());
+    }
+
+    /**
+     * @return array<string, array{string, bool, bool, bool}>
+     * @psalm-pure
+     */
+    public function providerIgnoredDocumentedExceptions(): array
+    {
+        return [
+            'exactClass' => ['RuntimeException', false, false, false],
+            'caseInsensitiveClass' => ['rUnTiMeExCePtIoN', false, false, false],
+            'descendant' => ['Exception', true, false, false],
+            'exactClassDoesNotIgnoreDescendants' => ['Exception', false, false, true],
+            'globalClassDoesNotIgnoreFunction' => ['RuntimeException', false, true, true],
+            'globalDescendantsDoNotIgnoreFunction' => ['Exception', true, true, true],
+            'unrelatedClass' => ['LogicException', true, false, true],
+        ];
+    }
+
+    public function testIgnoredThrownExceptionKeepsCoveringAnnotationUsed(): void
+    {
+        $config = Config::getInstance();
+        $config->check_for_throws_docblock = true;
+        $config->ignored_exceptions = ['RuntimeException' => true];
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /** @throws Exception */
+                function foo(): void {
+                    throw new RuntimeException();
+                }',
+        );
+        $this->analyzeFile('somefile.php', new Context());
+    }
+
+    public function testDoesNotNarrowIgnoredThrowsAnnotation(): void
+    {
+        $config = Config::getInstance();
+        $config->check_for_throws_docblock = true;
+        $config->ignored_exceptions = ['Exception' => true];
+        $config->setCustomErrorLevel('OverlyBroadThrowsDocblock', Config::REPORT_ERROR);
+
+        $this->addFile(
+            'somefile.php',
+            '<?php
+                /** @throws Exception */
+                function foo(): void {
+                    throw new RuntimeException();
+                }',
+        );
+        $this->analyzeFile('somefile.php', new Context());
     }
 
     public function testDoesNotRestoreCaughtExceptionAfterCatchVariableReassignment(): void

@@ -1,5 +1,8 @@
 # OverlyBroadThrowsDocblock
 
+Annotations matching `ignoreExceptions` are not reported or narrowed. Entries with `onlyGlobalScope="true"`
+do not disable this check inside functions or methods.
+
 Emitted when a concrete function or method documents an exception type that is broader than every uncaught exception inferred from its implementation.
 
 The check is opt-in. Enable `OverlyBroadThrowsDocblock` in `issueHandlers` or select it with Psalter's `--issues` option.
