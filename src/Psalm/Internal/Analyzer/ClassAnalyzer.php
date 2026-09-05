@@ -1708,6 +1708,15 @@ final class ClassAnalyzer extends ClassLikeAnalyzer
         ?Context $global_context = null,
         bool $is_fake = false,
     ): ?MethodAnalyzer {
+        if (!$class_context->collect_initializations
+            && !$class_context->collect_mutations
+            && !$source->getCodebase()->analyzer->shouldAnalyzeThrowsTarget(
+                $source->getFilePath(),
+                $stmt->getStartFilePos(),
+            )
+        ) {
+            return null;
+        }
         $config = Config::getInstance();
 
         if ($stmt->stmts === null && !$stmt->isAbstract()) {

@@ -64,6 +64,12 @@ final class FunctionAnalyzer extends FunctionLikeAnalyzer
         PhpParser\Node\Stmt\Function_ $stmt,
         Context $context,
     ): void {
+        if (!$statements_analyzer->getCodebase()->analyzer->shouldAnalyzeThrowsTarget(
+            $statements_analyzer->getFilePath(),
+            $stmt->getStartFilePos(),
+        )) {
+            return;
+        }
         foreach ($stmt->stmts as $function_stmt) {
             if ($function_stmt instanceof PhpParser\Node\Stmt\Global_) {
                 foreach ($function_stmt->vars as $var) {

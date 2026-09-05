@@ -36,6 +36,22 @@ vendor/bin/psalter --issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,Unus
 Issues selected by `--issues` are fixed and omitted from the report. Remaining issues, including unused variables and parameters, are reported normally and produce a non-zero exit code.
 
 
+## Updating throws in changed methods
+
+With `checkForThrowsDocblock="true"`, you can update exception documentation only in functions and methods touched by Git changes:
+
+```bash
+vendor/bin/psalter --changed --base=origin/develop \
+  --issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock \
+  --threads=1 --scan-threads=1 src/Service.php
+```
+
+Paths and `--changed` restrict which files and declarations are edited. Psalm also analyzes the transitive method and function calls in configured project files to infer their exceptions, including bodies without `@throws`. Dependency files are not edited unless selected. Library code outside the configured project continues to use its declared contracts; unresolved dynamic calls remain subject to the normal limits of static analysis.
+
+`MissingThrowsDocblock` adds each inferred exception type even when an existing `@throws Throwable` already covers it. Combining the three issues also removes unused or overly broad annotations based on the analyzed bodies.
+
+Keep the default cache enabled for repeated runs. Scanned storage is validated against file contents, and inferred exception summaries are rebuilt on each run, so replacing or removing a throw in a dependency invalidates the result even when its timestamp is unchanged. One analysis and scan process can reduce startup overhead for small selections; larger selections may benefit from more processes.
+
 ## Plugins
 
 You can pass in your own manipulation plugins e.g.

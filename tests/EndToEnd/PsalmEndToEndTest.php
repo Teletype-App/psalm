@@ -28,6 +28,7 @@ use function str_replace;
 use function substr_count;
 use function sys_get_temp_dir;
 use function tempnam;
+use function touch;
 use function trim;
 use function unlink;
 
@@ -592,6 +593,7 @@ final class PsalmEndToEndTest extends TestCase
                     /** @throws RuntimeException */
                     protected function computeRelatedParams(): void
                     {
+                        throw new RuntimeException();
                     }
                 }
                 PHP,
@@ -1077,6 +1079,169 @@ final class PsalmEndToEndTest extends TestCase
         foreach ($contentsAfterFirstRun as $filename => $contents) {
             $this->assertSame($contents, file_get_contents(self::$tmpDir . '/src/' . $filename));
         }
+    }
+
+    public function testPsalterFollowsUnselectedThrowsDependenciesWithWarmCache(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', <<<'XML'
+            <psalm xmlns="https://getpsalm.org/schema/config" errorLevel="8"
+                checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">
+                <projectFiles><directory name="src" /></projectFiles>
+                <issueHandlers>
+                    <MissingPureAnnotation errorLevel="suppress" />
+                    <MissingImmutableAnnotation errorLevel="suppress" />
+                </issueHandlers>
+            </psalm>
+            XML);
+        $caller = self::$tmpDir . '/src/Caller.php';
+        $bridge = self::$tmpDir . '/src/Bridge.php';
+        $leaf = self::$tmpDir . '/src/Leaf.php';
+        file_put_contents($caller, <<<'PHP'
+            <?php
+            namespace Foo;
+            class Caller {
+                public function run(Bridge $bridge): void {
+                    $bridge->run();
+                }
+                public function unchanged(): void {
+                    throw new \UnderflowException();
+                }
+            }
+            PHP);
+        $bridgeCode = <<<'PHP'
+            <?php
+            namespace Foo;
+            require_once __DIR__ . '/Leaf.php';
+            class Bridge {
+                public function run(): void { leaf(); }
+            }
+            PHP;
+        file_put_contents($bridge, $bridgeCode);
+        file_put_contents($leaf, '<?php namespace Foo; function leaf(): void {}');
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'src', 'psalm.xml'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+
+        foreach ([1, 2] as $threads) {
+            // The two exception names have equal length. Preserve mtime as well,
+            // so only a content-aware cache can notice the replacement.
+            foreach (['LogicException', 'ErrorException', null] as $exception) {
+                $body = $exception === null ? '' : 'throw new \\' . $exception . '();';
+                $leafCode = '<?php namespace Foo; function leaf(): void { ' . $body . ' }';
+                file_put_contents($leaf, $leafCode);
+                touch($leaf, 1_700_000_000);
+                $contents = (string) file_get_contents($caller);
+                file_put_contents($caller, str_replace('$bridge->run();', '$bridge->run(); // edited', $contents));
+                touch($caller, 1_700_000_000);
+
+                $process = new Process([
+                    PHP_BINARY,
+                    $this->psalter,
+                    '--changed',
+                    '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+                    '--threads=' . $threads,
+                    '--scan-threads=1',
+                    '--no-progress',
+                    $caller,
+                ], self::$tmpDir);
+                $process->mustRun();
+                $contents = (string) file_get_contents($caller);
+                if ($exception !== null) {
+                    $this->assertStringContainsString('@throws ' . $exception, $contents);
+                }
+                foreach (['LogicException', 'ErrorException', 'UnderflowException'] as $absent) {
+                    if ($absent !== $exception) {
+                        $this->assertStringNotContainsString('@throws ' . $absent, $contents);
+                    }
+                }
+                $this->assertSame($bridgeCode, file_get_contents($bridge));
+                $this->assertSame($leafCode, file_get_contents($leaf));
+                $process->mustRun();
+                $this->assertSame($contents, file_get_contents($caller));
+            }
+        }
+    }
+
+    public function testPsalterFollowsUnselectedTraitAndRecursiveFunctionThrows(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', <<<'XML'
+            <psalm xmlns="https://getpsalm.org/schema/config" errorLevel="8"
+                checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">
+                <projectFiles><directory name="src" /></projectFiles>
+                <issueHandlers>
+                    <MissingPureAnnotation errorLevel="suppress" />
+                    <MissingImmutableAnnotation errorLevel="suppress" />
+                </issueHandlers>
+            </psalm>
+            XML);
+        $files = [
+            'Caller.php' => <<<'PHP'
+                <?php
+                namespace Foo;
+                class Caller {
+                    /** @throws \Throwable */
+                    public function run(Service $service, int $depth): void {
+                        $service->run($depth);
+                    }
+                }
+                PHP,
+            'Service.php' => <<<'PHP'
+                <?php
+                namespace Foo;
+                class Service {
+                    use Work;
+                    public function helper(): void { throw new \LogicException(); }
+                }
+                PHP,
+            'Work.php' => <<<'PHP'
+                <?php
+                namespace Foo;
+                require_once __DIR__ . '/Functions.php';
+                trait Work {
+                    public function run(int $depth): void {
+                        if ($depth > 0) { recurse($depth); }
+                        $this->helper();
+                    }
+                }
+                PHP,
+            'Functions.php' => <<<'PHP'
+                <?php
+                namespace Foo;
+                function recurse(int $depth): void {
+                    if ($depth > 1) { recurse($depth - 1); }
+                    throw new \RuntimeException();
+                }
+                PHP,
+        ];
+        foreach ($files as $name => $contents) {
+            file_put_contents(self::$tmpDir . '/src/' . $name, $contents);
+        }
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=MissingThrowsDocblock',
+            '--threads=2',
+            '--scan-threads=2',
+            '--no-progress',
+            self::$tmpDir . '/src/Caller.php',
+        ], self::$tmpDir);
+        $process->mustRun();
+        $contents = (string) file_get_contents(self::$tmpDir . '/src/Caller.php');
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+        $this->assertStringContainsString('@throws LogicException', $contents);
+        $this->assertStringContainsString('@throws \Throwable', $contents);
+        foreach ($files as $name => $original) {
+            if ($name !== 'Caller.php') {
+                $this->assertSame($original, file_get_contents(self::$tmpDir . '/src/' . $name));
+            }
+        }
+        $process->mustRun();
+        $this->assertSame($contents, file_get_contents(self::$tmpDir . '/src/Caller.php'));
     }
 
     public function testPsalterPreservesConcretePropagatedThrowAlongsideThrowable(): void

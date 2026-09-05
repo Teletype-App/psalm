@@ -15,6 +15,7 @@ use Psalm\Internal\Algebra;
 use Psalm\Internal\Algebra\FormulaGenerator;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
 use Psalm\Internal\Analyzer\FunctionLikeAnalyzer;
+use Psalm\Internal\Analyzer\InferredThrowsBuffer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\ArgumentsAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Analyzer\TraitAnalyzer;
@@ -328,6 +329,21 @@ abstract class CallAnalyzer
 
             if (!$context->isSuppressingExceptions($statements_analyzer)) {
                 $context->mergeFunctionExceptions($method_storage, $code_location);
+
+                if ($declaring_class_storage->is_trait) {
+                    // A trait body is analyzed in its using class, never on its own.
+                    $appearing_id = $codebase->methods->getAppearingMethodId($method_id);
+                    if ($appearing_id !== null) {
+                        $appearing_storage = $codebase->classlike_storage_provider->get($appearing_id->fq_class_name);
+                        if ($appearing_storage->location !== null) {
+                            InferredThrowsBuffer::addDependency(
+                                $appearing_storage->location->file_path,
+                                -1,
+                                $code_location->file_path,
+                            );
+                        }
+                    }
+                }
 
                 if ($declaring_class_storage->is_trait && $method_storage->inheritdoc) {
                     foreach ($codebase->methods->getOverriddenMethodIds($method_id) as $overridden_method_id) {

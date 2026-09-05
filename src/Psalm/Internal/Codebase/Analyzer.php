@@ -39,6 +39,7 @@ use SebastianBergmann\Diff\Output\StrictUnifiedDiffOutputBuilder;
 use UnexpectedValueException;
 
 use function Amp\Future\await;
+use function array_fill_keys;
 use function array_filter;
 use function array_intersect_key;
 use function array_key_exists;
@@ -103,6 +104,8 @@ use const PHP_INT_MAX;
  *      used_suppressions: array<string, array<int, bool>>,
  *      function_docblock_manipulators: array<string, array<int, FunctionDocblockManipulator>>,
  *      inferred_throws: array<lowercase-string, array<string, true>>,
+ *      throws_dependencies: array<string, array<string, true>>,
+ *      throws_call_targets: array<string, array<int, true>>,
  *      mutable_classes: array<string, Mutations::LEVEL_*>,
  *      issue_handlers: array{type: string, index: int, count: int}[],
  * }
@@ -115,6 +118,18 @@ use const PHP_INT_MAX;
  */
 final class Analyzer
 {
+    /** @var array<string, array<int, true>|null>|null Null file entries select every declaration. */
+    private ?array $throws_analysis_targets = null;
+
+    /** @psalm-mutation-free */
+    public function shouldAnalyzeThrowsTarget(string $file_path, int $offset): bool
+    {
+        return $this->throws_analysis_targets === null
+            || (array_key_exists($file_path, $this->throws_analysis_targets)
+                && ($this->throws_analysis_targets[$file_path] === null
+                    || isset($this->throws_analysis_targets[$file_path][$offset])));
+    }
+
     /**
      * Used to store counts of mixed vs non-mixed variables
      *
@@ -269,7 +284,11 @@ final class Analyzer
             && (!$alter_code
                 || isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock']))
         ) {
+            $selected_files = $this->files_to_analyze;
+            $this->analyzeThrowsDependencies($project_analyzer, $pool_size);
             $this->convergeInferredThrows($project_analyzer, $pool_size);
+            $this->files_to_analyze = $selected_files;
+            $this->throws_analysis_targets = null;
 
             if (!$alter_code) {
                 IssueBuffer::clearCache();
@@ -343,7 +362,8 @@ final class Analyzer
 
         foreach (FileStorageProvider::getAll() as $file_storage) {
             foreach ($file_storage->functions as $function_storage) {
-                $function_storage->inferred_throws = null;
+                $function_storage->inferred_throws = $function_storage->location !== null
+                    && isset($this->files_to_analyze[$function_storage->location->file_path]) ? [] : null;
             }
         }
     }
@@ -460,6 +480,8 @@ final class Analyzer
 
                 FunctionDocblockManipulator::addManipulators($pool_data['function_docblock_manipulators']);
                 InferredThrowsBuffer::add($pool_data['inferred_throws']);
+                InferredThrowsBuffer::addDependencies($pool_data['throws_dependencies']);
+                InferredThrowsBuffer::addCallTargets($pool_data['throws_call_targets']);
 
                 $this->analyzed_methods = array_merge($pool_data['analyzed_methods'], $this->analyzed_methods);
 
@@ -507,57 +529,103 @@ final class Analyzer
         }
     }
 
+    /**
+     * Discover the transitive call dependencies of selected files without making
+     * those dependencies eligible for edits or diagnostics. Scan caches may be
+     * reused, but body summaries are rebuilt from current source on every run.
+     */
+    private function analyzeThrowsDependencies(ProjectAnalyzer $project_analyzer, int $pool_size): void
+    {
+        $codebase = $project_analyzer->getCodebase();
+        $selected_files = $this->files_to_analyze;
+        $all_files = $selected_files;
+        $targets = InferredThrowsBuffer::getCallTargets();
+        $this->throws_analysis_targets = array_fill_keys(array_keys($selected_files), null);
+
+        while (true) {
+            $new_files = [];
+            foreach ($targets as $file_path => $offsets) {
+                if (isset($selected_files[$file_path])
+                    || !$this->config->isInProjectDirs($file_path)
+                    || !$this->file_provider->fileExists($file_path)
+                ) {
+                    continue;
+                }
+                foreach ($offsets as $offset => $_) {
+                    if (!isset($this->throws_analysis_targets[$file_path][$offset])) {
+                        $this->throws_analysis_targets[$file_path][$offset] = true;
+                        $new_files[$file_path] = $file_path;
+                    }
+                }
+            }
+            if ($new_files === []) {
+                break;
+            }
+
+            $all_files += $new_files;
+            $codebase->scanner->addFilesToDeepScan($new_files);
+            $codebase->scanFiles($project_analyzer->scanThreads);
+            $this->files_to_analyze = $new_files;
+            InferredThrowsBuffer::clear();
+            $this->doAnalysis($project_analyzer, $pool_size);
+            $targets = InferredThrowsBuffer::getCallTargets();
+        }
+
+        $this->files_to_analyze = $all_files;
+        if ($all_files !== $selected_files) {
+            // Deep scanning can replace previously shallow storage. Start the
+            // fixed point from empty summaries only after discovery is complete.
+            $this->resetInferredThrows();
+            InferredThrowsBuffer::clear();
+            FunctionDocblockManipulator::clearCacheForFiles($all_files);
+            $this->doAnalysis($project_analyzer, $pool_size);
+        }
+    }
+
     private function convergeInferredThrows(ProjectAnalyzer $project_analyzer, int $pool_size): void
     {
         $codebase = $project_analyzer->getCodebase();
-        $references = $codebase->file_reference_provider->getAllMethodReferencesToClassMembers();
+        $dependencies = InferredThrowsBuffer::getDependencies();
         $summaries = InferredThrowsBuffer::getAll();
+        $functions = [];
+        foreach (FileStorageProvider::getAll() as $file_storage) {
+            $functions += $file_storage->functions;
+        }
 
         while ($summaries !== []) {
             $files_to_reanalyze = [];
 
-            foreach (array_keys($summaries) as $function_id) {
-                if (!MethodIdentifier::isValidMethodIdReference($function_id)) {
-                    continue;
-                }
-
-                try {
-                    $method_id = MethodIdentifier::fromMethodIdReference($function_id);
-                    $storage = $codebase->methods->getStorage($method_id);
-                    $classlike_storage = $codebase->methods->getClassLikeStorageForMethod($method_id);
-                } catch (UnexpectedValueException) {
-                    continue;
-                }
-
-                if ($classlike_storage->is_interface || $storage->abstract) {
-                    continue;
-                }
-
-                $new_throws = $summaries[$function_id];
-                if ($new_throws === $storage->inferred_throws) {
-                    continue;
-                }
-
-                $storage->inferred_throws = $new_throws;
-
-                foreach ($references[$function_id] ?? [] as $caller_id => $_) {
-                    if (!MethodIdentifier::isValidMethodIdReference($caller_id)) {
-                        continue;
-                    }
-
+            foreach ($summaries as $function_id => $new_throws) {
+                if (MethodIdentifier::isValidMethodIdReference($function_id)) {
                     try {
-                        $caller_storage = $codebase->methods->getStorage(
-                            MethodIdentifier::fromMethodIdReference($caller_id),
-                        );
+                        $method_id = MethodIdentifier::fromMethodIdReference($function_id);
+                        $storage = $codebase->methods->getStorage($method_id);
+                        $classlike_storage = $codebase->methods->getClassLikeStorageForMethod($method_id);
                     } catch (UnexpectedValueException) {
                         continue;
                     }
+                    if ($classlike_storage->is_interface || $storage->abstract) {
+                        continue;
+                    }
+                } else {
+                    $storage = $functions[$function_id] ?? null;
+                    if ($storage === null) {
+                        continue;
+                    }
+                }
 
-                    if ($caller_storage->location !== null) {
-                        $file_path = $caller_storage->location->file_path;
-                        if (isset($this->files_to_analyze[$file_path])) {
-                            $files_to_reanalyze[$file_path] = $file_path;
-                        }
+                // These are sets; worker completion order must not cause another wave.
+                if ($new_throws == $storage->inferred_throws) {
+                    continue;
+                }
+                $storage->inferred_throws = $new_throws;
+                if ($storage->location === null) {
+                    continue;
+                }
+
+                foreach ($dependencies[$storage->location->file_path] ?? [] as $caller_file => $_) {
+                    if (isset($this->files_to_analyze[$caller_file])) {
+                        $files_to_reanalyze[$caller_file] = $caller_file;
                     }
                 }
             }
@@ -573,6 +641,9 @@ final class Analyzer
             $this->doAnalysis($project_analyzer, $pool_size);
             $this->files_to_analyze = $files_to_analyze;
             $summaries = InferredThrowsBuffer::getAll();
+            foreach (InferredThrowsBuffer::getDependencies() as $file_path => $callers) {
+                $dependencies[$file_path] = $callers + ($dependencies[$file_path] ?? []);
+            }
         }
     }
 
@@ -1681,7 +1752,9 @@ final class Analyzer
 
         $progress->debug('Analyzing ' . $file_analyzer->getFilePath() . "\n");
 
+        InferredThrowsBuffer::setAnalysisFile($file_path);
         $file_analyzer->analyze();
+        InferredThrowsBuffer::setAnalysisFile(null);
         $file_analyzer->context = null;
         $file_analyzer->clearSourceBeforeDestruction();
         unset($file_analyzer);

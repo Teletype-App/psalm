@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Psalm;
 
 use InvalidArgumentException;
+use Psalm\Internal\Analyzer\InferredThrowsBuffer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Analyzer\ThrownExceptionOrigin;
 use Psalm\Internal\Clause;
@@ -903,6 +904,15 @@ final class Context
         FunctionLikeStorage $function_storage,
         CodeLocation $codelocation,
     ): void {
+        // Record calls even when their current summary is empty: an unselected
+        // implementation may throw exceptions that are absent from its docblock.
+        if ($function_storage->stmt_location !== null) {
+            InferredThrowsBuffer::addDependency(
+                $function_storage->stmt_location->file_path,
+                $function_storage->stmt_location->raw_file_start,
+                $codelocation->file_path,
+            );
+        }
         $hash = $codelocation->getHash();
         $throws = $function_storage->inferred_throws ?? $function_storage->throws;
         foreach ($throws as $possibly_thrown_exception => $_) {
