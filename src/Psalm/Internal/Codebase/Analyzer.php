@@ -1541,10 +1541,16 @@ final class Analyzer
 
         $last_start = PHP_INT_MAX;
         $existing_contents = $this->file_provider->getContents($file_path);
+        $original_contents = $existing_contents;
+        $applied_manipulations = [];
+        $changed_file_scope = ProjectAnalyzer::getInstance()->changed_file_scope;
 
         foreach ($file_manipulations as $manipulation) {
             if ($manipulation->start <= $last_start) {
                 $existing_contents = $manipulation->transform($existing_contents);
+                if ($changed_file_scope !== null) {
+                    $applied_manipulations[] = clone $manipulation;
+                }
                 $last_start = $manipulation->start;
             }
         }
@@ -1566,6 +1572,12 @@ final class Analyzer
 
         $this->progress->alterFileDone($file_path);
 
+        $changed_file_scope?->recordUpdate(
+            $file_path,
+            $original_contents,
+            $existing_contents,
+            $applied_manipulations,
+        );
         $this->file_provider->setContents($file_path, $existing_contents);
     }
 

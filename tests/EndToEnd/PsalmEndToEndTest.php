@@ -25,6 +25,8 @@ use function preg_replace;
 use function readdir;
 use function rmdir;
 use function str_replace;
+use function strpos;
+use function substr;
 use function substr_count;
 use function sys_get_temp_dir;
 use function tempnam;
@@ -173,6 +175,122 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertIsString($contents);
         $this->assertStringContainsString('@throws RuntimeException', $contents);
         $this->assertStringNotContainsString('@throws LogicException', $contents);
+    }
+
+    public function testPsalterMixesFullFilesWithChangedMethodsAndRelocatesErrors(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', <<<'XML'
+            <psalm xmlns="https://getpsalm.org/schema/config" errorLevel="8"
+                checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">
+                <projectFiles><directory name="src" /></projectFiles>
+                <issueHandlers>
+                    <MissingPureAnnotation errorLevel="suppress" />
+                    <MissingImmutableAnnotation errorLevel="suppress" />
+                </issueHandlers>
+            </psalm>
+            XML);
+        $partial = self::$tmpDir . '/src/Partial.php';
+        $full = self::$tmpDir . '/src/Whole file.php';
+        file_put_contents($partial, <<<'PHP'
+            <?php
+            namespace Foo;
+            class Partial {
+                public function changed(): void {
+                    partial_missing();
+                    throw new \RuntimeException();
+                }
+                public function untouched(): void {
+                    legacy_missing();
+                    throw new \DomainException();
+                }
+            }
+            PHP);
+        file_put_contents($full, <<<'PHP'
+            <?php
+            namespace Foo;
+
+            new \MissingFullClass();
+
+            function whole(): void {
+                whole_missing();
+                throw new \LogicException();
+            }
+            PHP);
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'src', 'psalm.xml'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+        file_put_contents($partial, str_replace(
+            'partial_missing();',
+            'partial_missing(); // edited',
+            (string) file_get_contents($partial),
+        ));
+        $before = (string) file_get_contents($partial);
+        $arguments = [
+            PHP_BINARY,
+            $this->psalter,
+            '--changed',
+            '--report-changed',
+            '--full-file=' . $full,
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--threads=2',
+            '--scan-threads=1',
+            '--no-progress',
+            '-m',
+        ];
+        $preview = new Process([...$arguments, '--dry-run', $partial], self::$tmpDir);
+        $preview->run();
+        $this->assertSame(2, $preview->getExitCode(), $preview->getOutput() . $preview->getErrorOutput());
+        $this->assertSame($before, file_get_contents($partial));
+        $this->assertStringNotContainsString('legacy_missing', $preview->getOutput());
+
+        $process = new Process([...$arguments, $partial], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringNotContainsString('legacy_missing', $process->getOutput());
+        $this->assertStringContainsString('UndefinedClass - src/Whole file.php:', $process->getOutput());
+        foreach ([$partial => 'partial_missing', $full => 'whole_missing'] as $path => $call) {
+            $source = (string) file_get_contents($path);
+            $position = strpos($source, $call . '()');
+            $this->assertNotFalse($position);
+            $line = substr_count(substr($source, 0, $position), "\n") + 1;
+            $this->assertStringContainsString(
+                ' - src/' . ($path === $partial ? 'Partial.php' : 'Whole file.php') . ':' . $line . ':',
+                $process->getOutput(),
+            );
+        }
+        $contents = (string) file_get_contents($partial);
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+        $this->assertStringNotContainsString('@throws DomainException', $contents);
+        $this->assertStringContainsString('@throws LogicException', (string) file_get_contents($full));
+        $process->run();
+        $this->assertSame(2, $process->getExitCode());
+        $this->assertSame($contents, file_get_contents($partial));
+
+        // Only the legacy error remains. It must neither appear nor cause exit 2.
+        file_put_contents($partial, str_replace('partial_missing();', '', $contents));
+        $filtered = new Process([
+            PHP_BINARY, $this->psalter, '--changed', '--report-changed',
+            '--issues=MissingThrowsDocblock', '--threads=1', '--scan-threads=1', '--no-progress', $partial,
+        ], self::$tmpDir);
+        $filtered->mustRun();
+        $this->assertStringNotContainsString('legacy_missing', $filtered->getOutput());
+    }
+
+    public function testPsalterRejectsReportScopeWithoutChangedMode(): void
+    {
+        $this->runPsalmInit();
+        foreach (['--report-changed', '--full-file=' . self::$tmpDir . '/src/FileWithErrors.php'] as $option) {
+            $process = new Process([
+                PHP_BINARY, $this->psalter, $option, '--issues=MissingThrowsDocblock', '--no-progress',
+            ], self::$tmpDir);
+            $process->run();
+            $this->assertSame(1, $process->getExitCode());
+            $this->assertStringContainsString('require --changed', $process->getErrorOutput());
+        }
     }
 
     public function testPsalterTreatsChangedDocblockAsChangedFunction(): void

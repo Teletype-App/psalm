@@ -569,6 +569,22 @@ final class IssueBuffer
             self::maybeAdd($issue);
         }
 
+        if ($project_analyzer->changed_file_scope !== null) {
+            self::$issues_data = $project_analyzer->changed_file_scope->filterAndRelocate(
+                self::$issues_data,
+                $codebase,
+            );
+            $fixable_counts = [];
+            foreach (self::$issues_data as $file_issues) {
+                foreach ($file_issues as $issue) {
+                    if (isset(self::$fixable_issue_counts[$issue->type])) {
+                        $fixable_counts[$issue->type] = ($fixable_counts[$issue->type] ?? 0) + 1;
+                    }
+                }
+            }
+            self::$fixable_issue_counts = $fixable_counts;
+        }
+
         $error_count = 0;
         $info_count = 0;
 

@@ -133,6 +133,8 @@ final class ProjectAnalyzer
     /** @var array<string, list<array{int, int}>>|null */
     private ?array $changed_lines = null;
 
+    public ?ChangedFileScope $changed_file_scope = null;
+
     public bool $dry_run = false;
 
     public bool $full_run = false;

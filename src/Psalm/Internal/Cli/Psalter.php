@@ -7,6 +7,7 @@ namespace Psalm\Internal\Cli;
 use AssertionError;
 use Psalm\Config;
 use Psalm\Exception\UnsupportedIssueToFixException;
+use Psalm\Internal\Analyzer\ChangedFileScope;
 use Psalm\Internal\Analyzer\ProjectAnalyzer;
 use Psalm\Internal\CliUtils;
 use Psalm\Internal\Composer;
@@ -31,6 +32,7 @@ use RuntimeException;
 use function array_diff_key;
 use function array_filter;
 use function array_key_exists;
+use function array_keys;
 use function array_map;
 use function array_shift;
 use function array_slice;
@@ -49,6 +51,7 @@ use function implode;
 use function in_array;
 use function is_array;
 use function is_dir;
+use function is_file;
 use function is_string;
 use function microtime;
 use function pathinfo;
@@ -67,6 +70,7 @@ use const FILTER_NULL_ON_FAILURE;
 use const FILTER_VALIDATE_BOOLEAN;
 use const PATHINFO_EXTENSION;
 use const PHP_EOL;
+use const PHP_INT_MAX;
 use const STDERR;
 
 // phpcs:disable PSR1.Files.SideEffects
@@ -94,6 +98,8 @@ final class Psalter
         'no-progress',
         'memory-limit:',
         'changed',
+        'report-changed',
+        'full-file:',
         'base:',
     ];
 
@@ -158,6 +164,12 @@ final class Psalter
 
                 --changed
                     Only update functions and methods touched by Git changes
+
+                --report-changed
+                    Only report issues in changed functions or changed lines; requires --changed
+
+                --full-file=PATH
+                    Fix and report the whole file, overriding --changed; repeatable
 
                 --base=REF
                     Include changes committed since the merge base with REF; requires --changed
@@ -327,28 +339,7 @@ final class Psalter
             $progress,
         );
 
-        if (isset($options['base']) && !array_key_exists('changed', $options)) {
-            fwrite(STDERR, '--base requires --changed' . PHP_EOL);
-            exit(1);
-        }
-
-        if (array_key_exists('changed', $options)) {
-            $base_ref = $options['base'] ?? null;
-            if ($base_ref !== null && (!is_string($base_ref) || $base_ref === '')) {
-                fwrite(STDERR, '--base expects a Git ref' . PHP_EOL);
-                exit(1);
-            }
-            assert($base_ref === null || is_string($base_ref));
-
-            try {
-                $project_analyzer->restrictFixesToChangedFunctions(
-                    GitChangedLines::collect($current_dir, $base_ref),
-                );
-            } catch (RuntimeException $e) {
-                fwrite(STDERR, $e->getMessage() . PHP_EOL);
-                exit(1);
-            }
-        }
+        self::configureChangedScope($options, $project_analyzer, $current_dir, $paths_to_check);
 
         if (array_key_exists('debug-by-line', $options)) {
             $project_analyzer->debug_lines = true;
@@ -483,7 +474,7 @@ final class Psalter
         $project_analyzer->alterCodeAfterCompletion(
             array_key_exists('dry-run', $options),
             array_key_exists('safe-types', $options),
-            $find_unused_variables,
+            $find_unused_variables || isset($options['report-changed']) || isset($options['full-file']),
         );
 
         if ($keyed_issues === ['all' => true]) {
@@ -522,6 +513,63 @@ final class Psalter
         }
 
         IssueBuffer::finish($project_analyzer, false, $start_time);
+    }
+
+    /**
+     * @param array<string, list<mixed>|string|false> $options
+     * @param list<string>|null $paths_to_check
+     */
+    private static function configureChangedScope(
+        array $options,
+        ProjectAnalyzer $project_analyzer,
+        string $current_dir,
+        ?array &$paths_to_check,
+    ): void {
+        if (isset($options['base']) && !array_key_exists('changed', $options)) {
+            fwrite(STDERR, '--base requires --changed' . PHP_EOL);
+            exit(1);
+        }
+
+        if ((isset($options['report-changed']) || isset($options['full-file']))
+            && !array_key_exists('changed', $options)
+        ) {
+            fwrite(STDERR, '--report-changed and --full-file require --changed' . PHP_EOL);
+            exit(1);
+        }
+
+        if (array_key_exists('changed', $options)) {
+            $base_ref = $options['base'] ?? null;
+            if ($base_ref !== null && (!is_string($base_ref) || $base_ref === '')) {
+                fwrite(STDERR, '--base expects a Git ref' . PHP_EOL);
+                exit(1);
+            }
+            assert($base_ref === null || is_string($base_ref));
+
+            try {
+                $changed_lines = GitChangedLines::collect($current_dir, $base_ref);
+            } catch (RuntimeException $e) {
+                fwrite(STDERR, $e->getMessage() . PHP_EOL);
+                exit(1);
+            }
+
+            $full_files = $options['full-file'] ?? [];
+            $full_files = is_array($full_files) ? $full_files : [$full_files];
+            foreach (array_keys($full_files) as $index) {
+                $path = is_string($full_files[$index]) && $full_files[$index] !== ''
+                    ? realpath($full_files[$index])
+                    : false;
+                if ($path === false || !is_file($path)) {
+                    fwrite(STDERR, '--full-file expects an existing file' . PHP_EOL);
+                    exit(1);
+                }
+                $changed_lines[$path] = [[1, PHP_INT_MAX]];
+                $paths_to_check[] = $path;
+            }
+            $project_analyzer->restrictFixesToChangedFunctions($changed_lines);
+            if (array_key_exists('report-changed', $options)) {
+                $project_analyzer->changed_file_scope = new ChangedFileScope($changed_lines);
+            }
+        }
     }
 
     /** @param array<int,string> $args */

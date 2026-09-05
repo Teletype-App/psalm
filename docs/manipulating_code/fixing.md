@@ -52,6 +52,19 @@ Paths and `--changed` restrict which files and declarations are edited. Psalm al
 
 Keep the default cache enabled for repeated runs. Scanned storage is validated against file contents, and inferred exception summaries are rebuilt on each run, so replacing or removing a throw in a dependency invalidates the result even when its timestamp is unchanged. One analysis and scan process can reduce startup overhead for small selections; larger selections may benefit from more processes.
 
+To apply fixes and report remaining issues in the same invocation, use `--report-changed`:
+
+```bash
+vendor/bin/psalter --changed --report-changed --base=origin/develop \
+  --full-file=src/NewService.php \
+  --issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock \
+  src/ExistingService.php
+```
+
+`--full-file=PATH` is repeatable and adds each file to the selection. These files receive the configured fixes and all normally enabled diagnostics, including unchanged code. Other selected files receive fixes and diagnostics in changed functions and methods; diagnostics outside functions are restricted to changed lines. Syntax errors remain visible because they can prevent analysis of changed code. New files in the Git diff already have all their lines selected; `--full-file` also supports explicitly treating an existing file as a whole.
+
+Both options require `--changed` and retain its throws-only restriction on fixes. `--report-changed` enables reporting even without `--find-unused-variables`. Remaining errors produce exit code 2; hidden errors from unchanged code do not. After writing docblocks and imports, reported locations refer to the updated file. With `--dry-run`, locations refer to the original file and no changes are written.
+
 ## Plugins
 
 You can pass in your own manipulation plugins e.g.
