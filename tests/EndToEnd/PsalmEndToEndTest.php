@@ -10,12 +10,14 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
 
 use function array_keys;
+use function array_slice;
 use function assert;
 use function closedir;
 use function copy;
 use function file_exists;
 use function file_get_contents;
 use function file_put_contents;
+use function filemtime;
 use function getcwd;
 use function is_dir;
 use function is_string;
@@ -1197,6 +1199,140 @@ final class PsalmEndToEndTest extends TestCase
         foreach ($contentsAfterFirstRun as $filename => $contents) {
             $this->assertSame($contents, file_get_contents(self::$tmpDir . '/src/' . $filename));
         }
+    }
+
+    public function testChangedThrowsRootsFollowSameFileHelpersButSkipUnrelatedMethods(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        $file = self::$tmpDir . '/src/Selected.php';
+        $source = <<<'PHP'
+            <?php
+            class Selected {
+                public function entry(): void {
+                    $this->helper();
+                }
+                private function helper(): void {
+                    (new Leaf())->go();
+                }
+                public function unrelated(): void {
+                    (new Noise())->go();
+                }
+            }
+            PHP;
+        file_put_contents($file, $source);
+        file_put_contents(
+            self::$tmpDir . '/src/Leaf.php',
+            '<?php class Leaf { public function go(): void { throw new DomainException(); } }',
+        );
+        file_put_contents(
+            self::$tmpDir . '/src/Noise.php',
+            '<?php class Noise { public function go(): void { throw new UnderflowException(); } }',
+        );
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'src', 'psalm.xml'], self::$tmpDir))->mustRun();
+        (new Process(['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com',
+            'commit', '-qm', 'Initial'], self::$tmpDir))->mustRun();
+        file_put_contents($file, str_replace('$this->helper();', '$this->helper(); // changed', $source));
+        $process = new Process([PHP_BINARY, $this->psalter, '--changed', '--report-changed',
+            '--issues=MissingThrowsDocblock', '--threads=1', '--dry-run', '--debug', $file], self::$tmpDir);
+        $process->setTimeout(30);
+        $process->mustRun();
+        $this->assertStringContainsString('@throws DomainException', $process->getOutput());
+        $this->assertStringNotContainsString('@throws UnderflowException', $process->getOutput());
+        $this->assertStringNotContainsString('Analyzing ' . self::$tmpDir . '/src/Noise.php', $process->getErrorOutput());
+        $this->assertSame(1, substr_count($process->getOutput(), '+     * @throws DomainException'));
+    }
+
+    public function testSharedTraitSummariesSurvivePartialAnalysisWaves(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        $files = [
+            'Shared' => 'trait Shared { public function work(): void { $this->step(); } }',
+            'Left' => 'class Left { use Shared; public function step(): void { (new Bridge())->go(); } }',
+            'Right' => 'class Right { use Shared; public function step(): void { throw new DomainException(); } }',
+            'Bridge' => 'class Bridge { public function go(): void { (new Leaf())->go(); } }',
+            'Leaf' => 'class Leaf { public function go(): void { throw new LogicException(); } }',
+            'Entry' => 'function entry(): void { (new Left())->work(); (new Right())->work(); }',
+        ];
+        foreach ($files as $name => $body) {
+            file_put_contents(self::$tmpDir . '/src/' . $name . '.php', '<?php ' . $body);
+        }
+        foreach ([1, 2] as $threads) {
+            $process = new Process([PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock',
+                '--threads=' . $threads, '--scan-threads=1', '--dry-run', '--no-progress',
+                self::$tmpDir . '/src/Entry.php'], self::$tmpDir);
+            $process->setTimeout(30);
+            $process->mustRun();
+            $this->assertStringContainsString('@throws LogicException', $process->getOutput());
+            $this->assertStringContainsString('@throws DomainException', $process->getOutput());
+        }
+    }
+
+    public function testPersistentInferredThrowsWithoutDocblocks(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        $caller = self::$tmpDir . '/src/A.php';
+        $bridge = self::$tmpDir . '/src/B.php';
+        $leaf = self::$tmpDir . '/src/C.php';
+        $other = self::$tmpDir . '/src/D.php';
+        file_put_contents($caller, '<?php class A { public function run(B $b, D $d): void { $b->run(); $d->run(); } }');
+        file_put_contents($bridge, '<?php class B { public function run(): void { (new C())->run(); } }');
+        file_put_contents($leaf, '<?php class C { public function run(): void { throw new \LogicException(); } }');
+        file_put_contents($other, '<?php class D { public function run(): void { throw new \UnderflowException(); } }');
+        $args = [PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--threads=1', '--scan-threads=1', '--debug', '--dry-run', $caller];
+        $run = static function (array $arguments): Process {
+            $process = new Process($arguments, self::$tmpDir);
+            $process->setTimeout(60);
+            $process->mustRun();
+            return $process;
+        };
+        $cold = $run($args);
+        $this->assertStringContainsString('@throws LogicException', $cold->getOutput());
+        $warm = $run($args);
+        foreach ([$bridge, $leaf, $other] as $file) {
+            $this->assertStringContainsString('Reusing inferred throws: ' . $file, $warm->getErrorOutput());
+        }
+        $normalize = static fn(string $text): string => preg_replace('/^Checks took .*$/m', '', $text);
+        $this->assertSame($normalize($cold->getOutput()), $normalize($warm->getOutput()));
+        $mtime = filemtime($leaf);
+        file_put_contents($leaf, str_replace('LogicException', 'ErrorException', (string) file_get_contents($leaf)));
+        touch($leaf, $mtime);
+        $updated = $run($args);
+        $this->assertStringContainsString('@throws ErrorException', $updated->getOutput());
+        $this->assertStringNotContainsString('@throws LogicException', $updated->getOutput());
+        foreach ([$bridge, $leaf] as $file) {
+            $this->assertStringNotContainsString('Reusing inferred throws: ' . $file, $updated->getErrorOutput());
+        }
+        $this->assertStringContainsString('Reusing inferred throws: ' . $other, $updated->getErrorOutput());
+        $forced = $run([...array_slice($args, 0, -1), '--no-cache', $caller]);
+        $this->assertStringNotContainsString('Reusing inferred throws:', $forced->getErrorOutput());
+        $this->assertSame($normalize($updated->getOutput()), $normalize($forced->getOutput()));
+        $this->assertStringNotContainsString('@throws', (string) file_get_contents($leaf));
+        file_put_contents($leaf, '<?php class C { public function run(): void {} }');
+        $removed = $run($args);
+        $this->assertStringNotContainsString('@throws ErrorException', $removed->getOutput());
+        $this->assertStringContainsString('@throws UnderflowException', $removed->getOutput());
+        // A declaration change invalidates even the otherwise unrelated D summary.
+        file_put_contents($leaf, '<?php class C { public function run(int $unused = 0): void {} }');
+        $signature = $run($args);
+        $this->assertStringNotContainsString('Reusing inferred throws:', $signature->getErrorOutput());
+        file_put_contents(self::$tmpDir . '/psalm.xml', str_replace(
+            'errorLevel="8"',
+            'errorLevel="7"',
+            (string) file_get_contents(self::$tmpDir . '/psalm.xml'),
+        ));
+        $configuration = $run($args);
+        $this->assertStringNotContainsString('Reusing inferred throws:', $configuration->getErrorOutput());
     }
 
     public function testPsalterFollowsUnselectedThrowsDependenciesWithWarmCache(): void

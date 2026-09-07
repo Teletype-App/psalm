@@ -652,3 +652,36 @@ class AChild extends A {
     }
 }
 ```
+
+### Cached inferred exceptions in this fork
+
+When throws analysis is enabled, Psalm stores computed exception sets in
+`inferred-throws-v1.json` inside its project cache directory. A summary is keyed by
+method/function identity and does not require an existing `@throws` annotation.
+Only results after convergence are saved; the cache does not contain diagnostics
+or authorize edits outside the selected scope.
+
+Selected files are still analyzed. With `--changed --report-changed`, the initial
+body analysis starts at changed methods/functions; called helpers, including
+helpers in the same file, are discovered transitively. `--full-file` retains full
+coverage for new files. Ordinary full-file diagnostics are not narrowed.
+For dependencies, unchanged summaries can replace body analysis. Content hashes invalidate a changed file and its
+transitive callers, including replacements that preserve file size and mtime.
+The first implementation invalidates bodies at file granularity, rather than
+trying to reuse other methods in the same changed file. Changes to declarations,
+PHPDoc, imports, the project file set, configuration, runtime, vendor or analyzer
+implementation invalidate the cache conservatively. Missing dependency inputs
+prevent reuse. `--no-cache` disables both reading and writing these summaries.
+Language-server/in-memory analysis does not use this disk cache.
+
+The first calculation can still be expensive. A completed `make quality` has an
+additional outer cache that can skip analyzers entirely on an identical run;
+this summary cache helps when an analyzer actually needs to run again. Writer
+changes to PHPDoc/imports invalidate pre-write summaries on the next analyzer
+invocation. No partially converged summaries are saved after an interrupted run.
+
+Shared trait methods retain separate results for their using-file contexts during
+convergence. Revisiting one class must not erase exceptions inferred in another
+class and cause endless alternating passes. Trait bodies are not persisted as
+context-free summaries; graph-only nodes preserve their dependencies on using
+classes, and a changed selection invalidates these contextual nodes and callers.

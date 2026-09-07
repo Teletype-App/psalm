@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Psalm\Internal\Codebase;
 
 use Amp\Future;
+use Generator;
 use InvalidArgumentException;
 use PhpParser;
 use Psalm\CodeLocation;
@@ -27,10 +28,12 @@ use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileProvider;
 use Psalm\Internal\Provider\FileStorageProvider;
+use Psalm\Internal\Provider\InferredThrowsCache;
 use Psalm\Internal\Provider\StatementsProvider;
 use Psalm\IssueBuffer;
 use Psalm\Progress\Phase;
 use Psalm\Progress\Progress;
+use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Storage\Mutations;
 use Psalm\Type;
 use Psalm\Type\Union;
@@ -104,6 +107,7 @@ use const PHP_INT_MAX;
  *      used_suppressions: array<string, array<int, bool>>,
  *      function_docblock_manipulators: array<string, array<int, FunctionDocblockManipulator>>,
  *      inferred_throws: array<lowercase-string, array<string, true>>,
+ *      throws_context_summaries: array<lowercase-string, array<string, array<string, true>>>,
  *      throws_dependencies: array<string, array<string, true>>,
  *      throws_call_targets: array<string, array<int, true>>,
  *      mutable_classes: array<string, Mutations::LEVEL_*>,
@@ -113,13 +117,18 @@ use const PHP_INT_MAX;
 
 /**
  * @internal
- *
- * Called in the analysis phase of Psalm's execution
+ * @psalm-import-type Entry from InferredThrowsCache
  */
 final class Analyzer
 {
     /** @var array<string, array<int, true>|null>|null Null file entries select every declaration. */
     private ?array $throws_analysis_targets = null;
+
+    private ?InferredThrowsCache $throws_cache = null;
+    /** @var array<lowercase-string, array<string, array<string, true>>> */
+    private array $throws_context_summaries = [];
+    /** @var array<string, array<string, true>> */
+    private array $throws_dependencies = [];
 
     /** @psalm-mutation-free */
     public function shouldAnalyzeThrowsTarget(string $file_path, int $offset): bool
@@ -263,6 +272,10 @@ final class Analyzer
         bool $alter_code,
         bool $consolidate_analyzed_data = false,
     ): void {
+        $this->throws_cache = null;
+        $this->throws_analysis_targets = null;
+        $this->throws_context_summaries = [];
+        $this->throws_dependencies = [];
         $this->loadCachedResults($project_analyzer);
 
         $codebase = $project_analyzer->getCodebase();
@@ -276,6 +289,43 @@ final class Analyzer
             $this->file_provider->fileExists(...),
         );
 
+        if ($codebase->config->check_for_throws_docblock && !$codebase->language_server
+            && $this->file_provider::class === FileProvider::class) {
+            $this->throws_cache = new InferredThrowsCache(
+                $this->config,
+                $this->files_to_analyze,
+                $codebase->analysis_php_version_id,
+            );
+            foreach ($this->throws_cache->entries() as $file => $entry) {
+                if ($entry['summaries'] !== []) {
+                    $this->progress->debug("Reusing inferred throws: " . $file . "\n");
+                }
+                foreach ($entry['dependencies'] as $callee => $_) {
+                    $this->throws_dependencies[$callee][$file] = true;
+                }
+            }
+        }
+        if ($alter_code && $project_analyzer->changed_file_scope !== null
+            && $codebase->config->check_for_throws_docblock) {
+            $this->throws_analysis_targets = [];
+            foreach ($this->files_to_analyze as $file => $_) {
+                $this->throws_analysis_targets[$file] = [];
+                $functions = (new PhpParser\NodeFinder())->find(
+                    $codebase->getStatementsForFile($file),
+                    static fn(PhpParser\Node $node): bool => $node instanceof PhpParser\Node\Stmt\ClassMethod
+                        || $node instanceof PhpParser\Node\Stmt\Function_,
+                );
+                foreach ($functions as $function) {
+                    if ($project_analyzer->canFixFunctionLike(
+                        $file,
+                        $function->getDocComment()?->getStartLine() ?? $function->getStartLine(),
+                        $function->getEndLine(),
+                    )) {
+                        $this->throws_analysis_targets[$file][$function->getStartFilePos()] = true;
+                    }
+                }
+            }
+        }
         $this->resetInferredThrows();
         InferredThrowsBuffer::clear();
         $this->doAnalysis($project_analyzer, $pool_size);
@@ -287,6 +337,7 @@ final class Analyzer
             $selected_files = $this->files_to_analyze;
             $this->analyzeThrowsDependencies($project_analyzer, $pool_size);
             $this->convergeInferredThrows($project_analyzer, $pool_size);
+            $this->saveThrowsCache();
             $this->files_to_analyze = $selected_files;
             $this->throws_analysis_targets = null;
 
@@ -297,6 +348,7 @@ final class Analyzer
             }
         }
 
+        InferredThrowsBuffer::addDependencies($this->throws_dependencies);
         $scanned_files = $codebase->scanner->getScannedFiles();
 
         if ($codebase->taint_flow_graph) {
@@ -369,6 +421,121 @@ final class Analyzer
     }
 
     private function doAnalysis(ProjectAnalyzer $project_analyzer, int $pool_size): void
+    {
+        $this->restoreThrowsCache();
+        $this->doUncachedAnalysis($project_analyzer, $pool_size);
+        // A shared trait body is analyzed in several using classes. A wave may
+        // revisit only one of them; retain the other contexts instead of making
+        // their exceptions disappear and reappear in alternating waves.
+        foreach (InferredThrowsBuffer::getContextSummaries() as $id => $contexts) {
+            $this->throws_context_summaries[$id] = $contexts + ($this->throws_context_summaries[$id] ?? []);
+            $combined = [];
+            foreach ($this->throws_context_summaries[$id] as $throws) {
+                $combined += $throws;
+            }
+            InferredThrowsBuffer::add([$id => $combined]);
+        }
+        foreach (InferredThrowsBuffer::getDependencies() as $callee => $callers) {
+            $this->throws_dependencies[$callee] = $callers + ($this->throws_dependencies[$callee] ?? []);
+        }
+    }
+
+    private function restoreThrowsCache(): void
+    {
+        $cached = $this->throws_cache?->entries() ?? [];
+        foreach ($this->throwsStorages() as $id => $storage) {
+            $file = $storage->location?->file_path;
+            if ($file !== null && isset($cached[$file]['summaries'][$id])) {
+                $storage->inferred_throws = $cached[$file]['summaries'][$id];
+            }
+        }
+    }
+
+    /**
+     * @return Generator<lowercase-string, FunctionLikeStorage>
+     * @psalm-external-mutation-free
+     */
+    private function throwsStorages(): Generator
+    {
+        $trait_files = [];
+        foreach (ClassLikeStorageProvider::getAll() as $class) {
+            if ($class->is_trait && $class->location !== null) {
+                $trait_files[$class->location->file_path] = true;
+            }
+        }
+        foreach (ClassLikeStorageProvider::getAll() as $class) {
+            if ($class->is_interface) {
+                continue;
+            }
+            foreach ($class->methods as $name => $storage) {
+                if (!$storage->abstract && !isset($trait_files[$storage->location?->file_path ?? ''])) {
+                    yield strtolower($class->name . '::' . $name) => $storage;
+                }
+            }
+        }
+        foreach (FileStorageProvider::getAll() as $file) {
+            foreach ($file->functions as $name => $storage) {
+                yield strtolower($name) => $storage;
+            }
+        }
+    }
+
+    private function saveThrowsCache(): void
+    {
+        foreach (FileStorageProvider::getAll() as $file) {
+            if ($file->has_visitor_issues && (isset($this->files_to_analyze[$file->file_path])
+                || isset($this->throws_dependencies[$file->file_path]))) {
+                $this->progress->debug("Throws cache blocked by " . $file->file_path . "\n");
+                return;
+            }
+        }
+        /** @var array<string, Entry> $entries */
+        $entries = [];
+        foreach ($this->files_to_analyze as $file => $_) {
+            $entries[$file] = ['summaries' => [], 'offsets' => [], 'dependencies' => []];
+        }
+        // Trait summaries depend on their using contexts. Keep graph-only nodes
+        // so changes in a using class invalidate consumers of the shared body.
+        foreach (ClassLikeStorageProvider::getAll() as $class) {
+            if (!$class->is_trait || $class->location === null) {
+                continue;
+            }
+            $file = $class->location->file_path;
+            if (!isset($entries[$file])) {
+                continue;
+            }
+            $entries[$file]['contextual'] = true;
+            foreach ($class->methods as $name => $_) {
+                $id = strtolower($class->name . '::' . $name);
+                foreach ($this->throws_context_summaries[$id] ?? [] as $context_file => $_) {
+                    if ($context_file !== '') {
+                        $entries[$file]['dependencies'][$context_file] = true;
+                    }
+                }
+            }
+        }
+        foreach ($this->throwsStorages() as $id => $storage) {
+            $file = $storage->location?->file_path;
+            $offset = $storage->stmt_location?->raw_file_start;
+            if ($file === null || $offset === null || !isset($this->files_to_analyze[$file])
+                || !$this->shouldAnalyzeThrowsTarget($file, $offset) || $storage->inferred_throws === null) {
+                continue;
+            }
+            $entries[$file]['summaries'][$id] = $storage->inferred_throws;
+            $entries[$file]['offsets'][$offset] = true;
+            $entries[$file]['dependencies'] ??= [];
+        }
+        foreach ($this->throws_dependencies as $callee => $callers) {
+            foreach ($callers as $caller => $_) {
+                if (isset($entries[$caller])) {
+                    $entries[$caller]['dependencies'][$callee] = true;
+                }
+            }
+        }
+        $this->throws_cache?->save($entries);
+    }
+
+    private function doUncachedAnalysis(ProjectAnalyzer $project_analyzer, int $pool_size): void
     {
         $this->progress->expand(count($this->files_to_analyze));
 
@@ -480,6 +647,7 @@ final class Analyzer
 
                 FunctionDocblockManipulator::addManipulators($pool_data['function_docblock_manipulators']);
                 InferredThrowsBuffer::add($pool_data['inferred_throws']);
+                InferredThrowsBuffer::addContextSummaries($pool_data['throws_context_summaries']);
                 InferredThrowsBuffer::addDependencies($pool_data['throws_dependencies']);
                 InferredThrowsBuffer::addCallTargets($pool_data['throws_call_targets']);
 
@@ -540,18 +708,23 @@ final class Analyzer
         $selected_files = $this->files_to_analyze;
         $all_files = $selected_files;
         $targets = InferredThrowsBuffer::getCallTargets();
-        $this->throws_analysis_targets = array_fill_keys(array_keys($selected_files), null);
+        $this->throws_analysis_targets ??= array_fill_keys(array_keys($selected_files), null);
+        $expanded = false;
 
         while (true) {
             $new_files = [];
             foreach ($targets as $file_path => $offsets) {
-                if (isset($selected_files[$file_path])
+                if ((array_key_exists($file_path, $this->throws_analysis_targets)
+                        && $this->throws_analysis_targets[$file_path] === null)
                     || !$this->config->isInProjectDirs($file_path)
                     || !$this->file_provider->fileExists($file_path)
                 ) {
                     continue;
                 }
                 foreach ($offsets as $offset => $_) {
+                    if ($this->throws_cache?->covers($file_path, $offset)) {
+                        continue;
+                    }
                     if (!isset($this->throws_analysis_targets[$file_path][$offset])) {
                         $this->throws_analysis_targets[$file_path][$offset] = true;
                         $new_files[$file_path] = $file_path;
@@ -562,6 +735,7 @@ final class Analyzer
                 break;
             }
 
+            $expanded = true;
             $all_files += $new_files;
             $codebase->scanner->addFilesToDeepScan($new_files);
             $codebase->scanFiles($project_analyzer->scanThreads);
@@ -572,10 +746,11 @@ final class Analyzer
         }
 
         $this->files_to_analyze = $all_files;
-        if ($all_files !== $selected_files) {
+        if ($expanded) {
             // Deep scanning can replace previously shallow storage. Start the
             // fixed point from empty summaries only after discovery is complete.
             $this->resetInferredThrows();
+            $this->throws_context_summaries = [];
             InferredThrowsBuffer::clear();
             FunctionDocblockManipulator::clearCacheForFiles($all_files);
             $this->doAnalysis($project_analyzer, $pool_size);

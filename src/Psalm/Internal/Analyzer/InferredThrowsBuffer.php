@@ -23,6 +23,9 @@ final class InferredThrowsBuffer
     /** @var array<string, array<int, true>> Callee file => declaration offsets. */
     private static array $call_targets = [];
 
+    /** @var array<lowercase-string, array<string, array<string, true>>> */
+    private static array $context_summaries = [];
+
     private static ?string $analysis_file = null;
 
     /** @psalm-external-mutation-free */
@@ -86,6 +89,8 @@ final class InferredThrowsBuffer
     {
         $function_id = strtolower($function_id);
         self::$inferred_throws[$function_id] = $throws + (self::$inferred_throws[$function_id] ?? []);
+        $file = self::$analysis_file ?? '';
+        self::$context_summaries[$function_id][$file] = $throws + (self::$context_summaries[$function_id][$file] ?? []);
     }
 
     /**
@@ -108,10 +113,27 @@ final class InferredThrowsBuffer
         return self::$inferred_throws;
     }
 
+    /** @return array<lowercase-string, array<string, array<string, true>>> */
+    public static function getContextSummaries(): array
+    {
+        return self::$context_summaries;
+    }
+
+    /** @param array<lowercase-string, array<string, array<string, true>>> $summaries */
+    public static function addContextSummaries(array $summaries): void
+    {
+        foreach ($summaries as $id => $contexts) {
+            foreach ($contexts as $file => $throws) {
+                self::$context_summaries[$id][$file] = $throws + (self::$context_summaries[$id][$file] ?? []);
+            }
+        }
+    }
+
     /** @psalm-external-mutation-free */
     public static function clear(): void
     {
         self::$inferred_throws = [];
+        self::$context_summaries = [];
         self::$dependencies = [];
         self::$call_targets = [];
         self::$analysis_file = null;
