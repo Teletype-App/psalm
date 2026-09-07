@@ -911,6 +911,7 @@ final class Context
                 $function_storage->stmt_location->file_path,
                 $function_storage->stmt_location->raw_file_start,
                 $codelocation->file_path,
+                $codelocation->raw_file_start,
             );
         }
         $hash = $codelocation->getHash();

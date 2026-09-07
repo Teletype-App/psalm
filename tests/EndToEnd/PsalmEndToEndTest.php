@@ -19,8 +19,11 @@ use function file_get_contents;
 use function file_put_contents;
 use function filemtime;
 use function getcwd;
+use function glob;
 use function is_dir;
 use function is_string;
+use function json_decode;
+use function json_encode;
 use function mkdir;
 use function opendir;
 use function preg_replace;
@@ -1272,6 +1275,90 @@ final class PsalmEndToEndTest extends TestCase
             $this->assertStringContainsString('@throws LogicException', $process->getOutput());
             $this->assertStringContainsString('@throws DomainException', $process->getOutput());
         }
+    }
+
+    public function testMethodThrowsCacheKeepsSiblingsAcrossRepeatedDependencyEdits(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        foreach (['A' => 'B', 'B' => 'C'] as $caller => $callee) {
+            file_put_contents(self::$tmpDir . '/src/' . $caller . '.php', '<?php class ' . $caller . ' {'
+                . ' public function changed(): void { (new ' . $callee . '())->changed(); }'
+                . ' public function sibling(): void { (new ' . $callee . '())->sibling(); }}');
+        }
+        $leaf = self::$tmpDir . '/src/C.php';
+        $source = '<?php class C {'
+            . ' public function changed(): void { throw new LogicException(); }'
+            . ' public function sibling(): void { throw new UnderflowException(); }}';
+        file_put_contents($leaf, $source);
+        $entry = self::$tmpDir . '/src/Entry.php';
+        file_put_contents($entry, '<?php function entry(): void { (new A())->changed(); (new A())->sibling(); }');
+        $args = [PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock',
+            '--threads=2', '--scan-threads=1', '--debug', '--dry-run', $entry];
+        $run = static function (array $arguments): Process {
+            $process = new Process($arguments, self::$tmpDir);
+            $process->setTimeout(60);
+            $process->mustRun();
+            return $process;
+        };
+        $run($args);
+        $mtime = filemtime($leaf);
+        foreach (['ErrorException', 'RangeException'] as $exception) {
+            file_put_contents($leaf, str_replace('LogicException', $exception, $source));
+            touch($leaf, $mtime);
+            $updated = $run($args);
+            $this->assertStringContainsString('@throws ' . $exception, $updated->getOutput());
+            $this->assertStringNotContainsString('@throws LogicException', $updated->getOutput());
+            foreach (['a', 'b', 'c'] as $class) {
+                $this->assertStringContainsString(
+                    'Reusing inferred throws method: ' . $class . '::sibling',
+                    $updated->getErrorOutput(),
+                );
+                $this->assertStringNotContainsString(
+                    'Reusing inferred throws method: ' . $class . '::changed',
+                    $updated->getErrorOutput(),
+                );
+            }
+        }
+        // Shift every following declaration, then remove the exception entirely.
+        file_put_contents($leaf, str_replace('throw new LogicException();', "\n // no exception\n", $source));
+        $removed = $run($args);
+        $this->assertStringNotContainsString('@throws RangeException', $removed->getOutput());
+        $this->assertStringContainsString('@throws UnderflowException', $removed->getOutput());
+        foreach (['a', 'b', 'c'] as $class) {
+            $this->assertStringContainsString(
+                'Reusing inferred throws method: ' . $class . '::sibling',
+                $removed->getErrorOutput(),
+            );
+        }
+        $forced = $run([...array_slice($args, 0, -1), '--no-cache', $entry]);
+        $normalize = static fn(string $text): string => preg_replace('/^Checks took .*$/m', '', $text);
+        $this->assertSame($normalize($forced->getOutput()), $normalize($removed->getOutput()));
+        $this->assertStringNotContainsString('Reusing inferred throws:', $forced->getErrorOutput());
+        $caches = glob(self::$tmpDir . '/cache/*/inferred-throws-v1.json');
+        $this->assertCount(1, $caches);
+        $cache = $caches[0];
+        $state = json_decode((string) file_get_contents($cache), true);
+        // A missing method graph must not be interpreted as "no dependencies".
+        unset($state['entries'][self::$tmpDir . '/src/B.php']['method_dependencies']);
+        file_put_contents($cache, json_encode($state));
+        $uncertain = $run($args);
+        $this->assertSame($normalize($forced->getOutput()), $normalize($uncertain->getOutput()));
+        $this->assertStringNotContainsString('Reusing inferred throws method: b::sibling', $uncertain->getErrorOutput());
+        $this->assertStringNotContainsString('Reusing inferred throws method: a::sibling', $uncertain->getErrorOutput());
+        $this->assertStringContainsString('Reusing inferred throws method: c::sibling', $uncertain->getErrorOutput());
+        $state = json_decode((string) file_get_contents($cache), true);
+        unset($state['entries'][self::$tmpDir . '/src/B.php']);
+        file_put_contents($cache, json_encode($state));
+        $missing = $run($args);
+        $this->assertSame($normalize($forced->getOutput()), $normalize($missing->getOutput()));
+        $this->assertStringNotContainsString('Reusing inferred throws method: a::sibling', $missing->getErrorOutput());
+        file_put_contents($cache, '{broken');
+        $broken = $run($args);
+        $this->assertSame($normalize($forced->getOutput()), $normalize($broken->getOutput()));
+        $this->assertStringNotContainsString('Reusing inferred throws:', $broken->getErrorOutput());
     }
 
     public function testPersistentInferredThrowsWithoutDocblocks(): void

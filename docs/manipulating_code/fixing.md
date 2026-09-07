@@ -665,10 +665,16 @@ Selected files are still analyzed. With `--changed --report-changed`, the initia
 body analysis starts at changed methods/functions; called helpers, including
 helpers in the same file, are discovered transitively. `--full-file` retains full
 coverage for new files. Ordinary full-file diagnostics are not narrowed.
-For dependencies, unchanged summaries can replace body analysis. Content hashes invalidate a changed file and its
-transitive callers, including replacements that preserve file size and mtime.
-The first implementation invalidates bodies at file granularity, rather than
-trying to reuse other methods in the same changed file. Changes to declarations,
+For dependencies, unchanged summaries can replace body analysis. Content hashes
+invalidate a changed method and its transitive callers, including replacements
+that preserve file size and mtime. Unrelated methods in the same files retain
+their summaries. Declaration positions are remapped when preceding code changes
+length. Call-site edges are collected by each analysis worker and persisted with
+the summaries; missing method graphs invalidate the affected summaries and callers.
+Unknown call contexts, closures without standalone summaries and shared traits
+retain conservative file dependencies. The outer quality cache still operates
+at file granularity; selected roots are analyzed for diagnostics and PHPDoc edits.
+Changes to declarations,
 PHPDoc, imports, the project file set, configuration, runtime, vendor or analyzer
 implementation invalidate the cache conservatively. Missing dependency inputs
 prevent reuse. `--no-cache` disables both reading and writing these summaries.

@@ -39,6 +39,7 @@ use function serialize;
 use function str_ends_with;
 use function str_starts_with;
 use function strtolower;
+use function substr;
 use function tempnam;
 use function unlink;
 
@@ -47,13 +48,16 @@ use const PATHINFO_EXTENSION;
 use const PHP_VERSION;
 
 /**
- * Persistent body summaries; invalidation deliberately operates at file granularity.
+ * Persistent body summaries with method invalidation and conservative file fallback.
  *
  * @internal
- * @psalm-type Fingerprint = array{hash: string, declarations: string}
+ * @psalm-type Body = array{hash: string, start: int, end: int}
+ * @psalm-type Fingerprint = array{hash: string, declarations: string, bodies?: list<Body>}
  * @psalm-type Entry = array{
  *     summaries: array<lowercase-string, array<string, true>>,
- *     offsets: array<int, true>, dependencies: array<string, true>, contextual?: bool
+ *     offsets: array<int, true>, dependencies: array<string, true>, contextual?: bool,
+ *     method_offsets?: array<lowercase-string, int>,
+ *     method_dependencies?: array<lowercase-string, array<string, array<int, true>>>
  * }
  * @psalm-type Snapshot = array{files: array<string, Fingerprint>, global: string}
  * @psalm-type CacheState = array{
@@ -85,7 +89,7 @@ final class InferredThrowsCache
         $this->path = $directory . '/inferred-throws-v1.json';
         /** @var mixed $decoded */
         $decoded = is_file($this->path) ? json_decode((string) file_get_contents($this->path), true) : null;
-        if (is_array($decoded) && ($decoded['schema'] ?? null) === 1
+        if (is_array($decoded) && ($decoded['schema'] ?? null) === 2
             && is_string($decoded['global'] ?? null) && is_array($decoded['files'] ?? null)
             && is_array($decoded['entries'] ?? null) && is_array($decoded['selected'] ?? null)) {
             /** @var CacheState $decoded */
@@ -122,10 +126,80 @@ final class InferredThrowsCache
                 }
             }
         } while ($changed);
-        foreach ($this->state['entries'] ?? [] as $file => $entry) {
-            if (!isset($invalid[$file])
-                && !isset($selected[$file]) && isset($this->snapshot['files'][$file])) {
-                $this->valid[$file] = $entry;
+        // The declaration fingerprint fixes declaration order and identity. Body
+        // indices therefore survive line/byte shifts without using stale offsets.
+        $invalid_bodies = [];
+        $known_bodies = [];
+        foreach ($this->state['entries'] as $file => $entry) {
+            foreach ($entry['method_offsets'] ?? [] as $id => $offset) {
+                $index = $this->bodyIndex($this->state['files'], $file, $offset);
+                if ($index !== null && isset($entry['summaries'][$id], $entry['method_dependencies'][$id])) {
+                    $known_bodies[$file][$index] = true;
+                }
+            }
+        }
+        foreach ($this->state['files'] as $file => $fingerprint) {
+            foreach ($fingerprint['bodies'] ?? [] as $index => $body) {
+                if ($body['hash'] !== ($this->snapshot['files'][$file]['bodies'][$index]['hash'] ?? null)) {
+                    $invalid_bodies[$file][$index] = true;
+                }
+            }
+        }
+        do {
+            $changed = false;
+            foreach ($this->state['entries'] as $file => $entry) {
+                foreach ($entry['method_offsets'] ?? [] as $id => $offset) {
+                    $index = $this->bodyIndex($this->state['files'], $file, $offset);
+                    if ($index === null || isset($invalid_bodies[$file][$index])) {
+                        continue;
+                    }
+                    $dependencies = $entry['method_dependencies'][$id] ?? null;
+                    $stale = $dependencies === null || ($entry['contextual'] ?? false);
+                    foreach ($dependencies ?? [] as $callee => $indices) {
+                        foreach ($indices as $callee_index => $_) {
+                            if ($callee_index === -1 ? isset($invalid[$callee])
+                                || !isset($this->snapshot['files'][$callee])
+                                : isset($invalid_bodies[$callee][$callee_index])
+                                || !isset($known_bodies[$callee][$callee_index])
+                                || !isset($this->snapshot['files'][$callee]['bodies'][$callee_index])) {
+                                $stale = true;
+                            }
+                        }
+                    }
+                    if ($stale) {
+                        $invalid_bodies[$file][$index] = true;
+                        $changed = true;
+                    }
+                }
+            }
+        } while ($changed);
+        foreach ($this->state['entries'] as $file => $entry) {
+            if (!isset($this->snapshot['files'][$file])) {
+                continue;
+            }
+            $valid = $entry;
+            $valid['summaries'] = [];
+            $valid['offsets'] = [];
+            $valid['method_offsets'] = [];
+            $valid['method_dependencies'] = [];
+            foreach ($entry['method_offsets'] ?? [] as $id => $offset) {
+                $index = $this->bodyIndex($this->state['files'], $file, $offset);
+                if ($index === null || isset($invalid_bodies[$file][$index])
+                    || !isset(
+                        $entry['summaries'][$id],
+                        $entry['method_dependencies'][$id],
+                        $this->snapshot['files'][$file]['bodies'][$index],
+                    )) {
+                    continue;
+                }
+                $new_offset = $this->snapshot['files'][$file]['bodies'][$index]['start'];
+                $valid['summaries'][$id] = $entry['summaries'][$id];
+                $valid['offsets'][$new_offset] = true;
+                $valid['method_offsets'][$id] = $new_offset;
+                $valid['method_dependencies'][$id] = $entry['method_dependencies'][$id];
+            }
+            if ($valid['summaries'] !== [] || !isset($invalid[$file])) {
+                $this->valid[$file] = $valid;
             }
         }
     }
@@ -146,8 +220,9 @@ final class InferredThrowsCache
      * Save only after convergence and only if inputs remained identical.
      *
      * @param array<string, Entry> $entries
+     * @param array<string, array<int, array<string, array<int, true>>>> $edges
      */
-    public function save(array $entries): void
+    public function save(array $entries, array $edges): void
     {
         if ($this->path === null || !$this->safe) {
             return;
@@ -157,7 +232,56 @@ final class InferredThrowsCache
             return;
         }
         $entries = array_intersect_key($entries, $this->snapshot['files']);
-        $state = ['schema' => 1, 'global' => $this->snapshot['global'],
+        $all_entries = $entries + $this->valid;
+        foreach ($this->valid as $file => $valid) {
+            $all_entries[$file]['offsets'] += $valid['offsets'];
+        }
+        foreach ($entries as $file => &$entry) {
+            foreach ($entry['method_offsets'] ?? [] as $id => $offset) {
+                $index = $this->bodyIndex($this->snapshot['files'], $file, $offset);
+                if ($index === null || !isset($this->snapshot['files'][$file]['bodies'][$index])) {
+                    continue;
+                }
+                $body = $this->snapshot['files'][$file]['bodies'][$index];
+                $dependencies = [];
+                $represented = [];
+                foreach ($edges[$file] ?? [] as $position => $callees) {
+                    foreach ($callees as $callee => $offsets) {
+                        $represented[$callee] = true;
+                        if ($position !== -1 && ($position < $body['start'] || $position > $body['end'])) {
+                            continue;
+                        }
+                        foreach ($offsets as $callee_offset => $_) {
+                            $callee_index = $this->bodyIndex($this->snapshot['files'], $callee, $callee_offset);
+                            // Unknown contexts and trait/closure targets keep the
+                            // complete file dependency as a safe fallback.
+                            if ($position === -1 || ($all_entries[$callee]['contextual'] ?? false)
+                                || !isset($all_entries[$callee]['offsets'][$callee_offset])) {
+                                $callee_index = null;
+                            }
+                            $dependencies[$callee][$callee_index ?? -1] = true;
+                        }
+                    }
+                }
+                foreach ($entry['dependencies'] as $callee => $_) {
+                    if (!isset($represented[$callee])) {
+                        $dependencies[$callee][-1] = true;
+                    }
+                }
+                $entry['method_dependencies'][$id] = $dependencies;
+            }
+            // A dependency file can be visited for just one invalid method;
+            // retain valid siblings, including their dependency edges.
+            $previous = $this->valid[$file] ?? [];
+            $entry['summaries'] += $previous['summaries'] ?? [];
+            $entry['offsets'] += $previous['offsets'] ?? [];
+            $entry['dependencies'] += $previous['dependencies'] ?? [];
+            $entry['method_offsets'] = ($entry['method_offsets'] ?? []) + ($previous['method_offsets'] ?? []);
+            $entry['method_dependencies'] = ($entry['method_dependencies'] ?? [])
+                + ($previous['method_dependencies'] ?? []);
+        }
+        unset($entry);
+        $state = ['schema' => 2, 'global' => $this->snapshot['global'],
             'files' => $this->snapshot['files'], 'selected' => $this->selected,
             'entries' => $entries + $this->valid];
         $temporary = tempnam(dirname($this->path), 'throws-');
@@ -194,10 +318,11 @@ final class InferredThrowsCache
                 }
                 if ($extension === 'php' && $this->config->isInProjectDirs($file)) {
                     $previous = $this->state['files'][$file] ?? [];
-                    $declarations = isset($previous['declarations']) && ($previous['hash'] ?? null) === $hash
-                        ? $previous['declarations'] : $this->declarations((string) file_get_contents($file));
-                    $files[$file] = ['hash' => $hash, 'declarations' => $declarations];
-                    $global[$file] = $declarations;
+                    $fingerprint = isset($previous['declarations']) && ($previous['hash'] ?? null) === $hash
+                        ? $previous : $this->declarations((string) file_get_contents($file));
+                    $fingerprint['hash'] = $hash;
+                    $files[$file] = $fingerprint;
+                    $global[$file] = $fingerprint['declarations'];
                 } else {
                     $global[$file] = $hash;
                     $files[$file] = ['hash' => $hash, 'declarations' => $hash];
@@ -234,10 +359,33 @@ final class InferredThrowsCache
         }
     }
 
-    private function declarations(string $source): string
+    /**
+     * @param array<string, Fingerprint> $files
+     * @psalm-pure
+     */
+    private function bodyIndex(array $files, string $file, int $offset): ?int
+    {
+        foreach ($files[$file]['bodies'] ?? [] as $index => $body) {
+            if ($body['start'] === $offset) {
+                return $index;
+            }
+        }
+        return null;
+    }
+
+    /** @return Fingerprint */
+    private function declarations(string $source): array
     {
         try {
             $nodes = (new ParserFactory())->createForNewestSupportedVersion()->parse($source) ?? [];
+            $bodies = [];
+            foreach ((new NodeFinder())->find($nodes, static fn(Node $node): bool =>
+                $node instanceof Node\Stmt\ClassMethod || $node instanceof Node\Stmt\Function_) as $node) {
+                $start = $node->getStartFilePos();
+                $end = $node->getEndFilePos();
+                $bodies[] = ['start' => $start, 'end' => $end,
+                    'hash' => hash('sha256', substr($source, $start, $end - $start + 1))];
+            }
             $traverser = new NodeTraverser(new class extends NodeVisitorAbstract {
                 #[Override]
                 public function enterNode(Node $node): ?Node
@@ -256,10 +404,11 @@ final class InferredThrowsCache
                     return null;
                 }
             });
-            return hash('sha256', (new Standard())->prettyPrint($traverser->traverse($nodes)));
+            return ['hash' => hash('sha256', $source), 'bodies' => $bodies,
+                'declarations' => hash('sha256', (new Standard())->prettyPrint($traverser->traverse($nodes)))];
         } catch (Error) {
             $this->safe = false;
-            return hash('sha256', $source);
+            return ['hash' => hash('sha256', $source), 'declarations' => hash('sha256', $source)];
         }
     }
 }

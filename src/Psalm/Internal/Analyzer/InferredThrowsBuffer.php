@@ -23,6 +23,9 @@ final class InferredThrowsBuffer
     /** @var array<string, array<int, true>> Callee file => declaration offsets. */
     private static array $call_targets = [];
 
+    /** @var array<string, array<int, array<string, array<int, true>>>> Caller file/position => callee file/offsets. */
+    private static array $call_edges = [];
+
     /** @var array<lowercase-string, array<string, array<string, true>>> */
     private static array $context_summaries = [];
 
@@ -35,8 +38,17 @@ final class InferredThrowsBuffer
     }
 
     /** @psalm-external-mutation-free */
-    public static function addDependency(string $callee_file, int $offset, string $caller_file): void
-    {
+    public static function addDependency(
+        string $callee_file,
+        int $offset,
+        string $caller_file,
+        int $caller_offset = -1,
+    ): void {
+        $analysis_file = self::$analysis_file ?? $caller_file;
+        if ($analysis_file !== $caller_file) {
+            $caller_offset = -1;
+        }
+        self::$call_edges[$analysis_file][$caller_offset][$callee_file][$offset] = true;
         self::$dependencies[$callee_file][self::$analysis_file ?? $caller_file] = true;
         self::$call_targets[$callee_file][$offset] = true;
     }
@@ -59,6 +71,25 @@ final class InferredThrowsBuffer
     public static function getCallTargets(): array
     {
         return self::$call_targets;
+    }
+
+    /** @return array<string, array<int, array<string, array<int, true>>>> */
+    public static function getCallEdges(): array
+    {
+        return self::$call_edges;
+    }
+
+    /** @param array<string, array<int, array<string, array<int, true>>>> $edges */
+    public static function addCallEdges(array $edges): void
+    {
+        foreach ($edges as $caller => $positions) {
+            foreach ($positions as $position => $callees) {
+                foreach ($callees as $callee => $offsets) {
+                    self::$call_edges[$caller][$position][$callee] =
+                        $offsets + (self::$call_edges[$caller][$position][$callee] ?? []);
+                }
+            }
+        }
     }
 
     /**
@@ -136,6 +167,7 @@ final class InferredThrowsBuffer
         self::$context_summaries = [];
         self::$dependencies = [];
         self::$call_targets = [];
+        self::$call_edges = [];
         self::$analysis_file = null;
     }
 }

@@ -110,6 +110,7 @@ use const PHP_INT_MAX;
  *      throws_context_summaries: array<lowercase-string, array<string, array<string, true>>>,
  *      throws_dependencies: array<string, array<string, true>>,
  *      throws_call_targets: array<string, array<int, true>>,
+ *      throws_call_edges: array<string, array<int, array<string, array<int, true>>>>,
  *      mutable_classes: array<string, Mutations::LEVEL_*>,
  *      issue_handlers: array{type: string, index: int, count: int}[],
  * }
@@ -129,6 +130,9 @@ final class Analyzer
     private array $throws_context_summaries = [];
     /** @var array<string, array<string, true>> */
     private array $throws_dependencies = [];
+
+    /** @var array<string, array<int, array<string, array<int, true>>>> */
+    private array $throws_call_edges = [];
 
     /** @psalm-mutation-free */
     public function shouldAnalyzeThrowsTarget(string $file_path, int $offset): bool
@@ -276,6 +280,7 @@ final class Analyzer
         $this->throws_analysis_targets = null;
         $this->throws_context_summaries = [];
         $this->throws_dependencies = [];
+        $this->throws_call_edges = [];
         $this->loadCachedResults($project_analyzer);
 
         $codebase = $project_analyzer->getCodebase();
@@ -299,6 +304,9 @@ final class Analyzer
             foreach ($this->throws_cache->entries() as $file => $entry) {
                 if ($entry['summaries'] !== []) {
                     $this->progress->debug("Reusing inferred throws: " . $file . "\n");
+                    foreach ($entry['summaries'] as $id => $_) {
+                        $this->progress->debug("Reusing inferred throws method: " . $id . "\n");
+                    }
                 }
                 foreach ($entry['dependencies'] as $callee => $_) {
                     $this->throws_dependencies[$callee][$file] = true;
@@ -438,6 +446,14 @@ final class Analyzer
         foreach (InferredThrowsBuffer::getDependencies() as $callee => $callers) {
             $this->throws_dependencies[$callee] = $callers + ($this->throws_dependencies[$callee] ?? []);
         }
+        foreach (InferredThrowsBuffer::getCallEdges() as $caller => $positions) {
+            foreach ($positions as $position => $callees) {
+                foreach ($callees as $callee => $offsets) {
+                    $this->throws_call_edges[$caller][$position][$callee] =
+                        $offsets + ($this->throws_call_edges[$caller][$position][$callee] ?? []);
+                }
+            }
+        }
     }
 
     private function restoreThrowsCache(): void
@@ -523,6 +539,7 @@ final class Analyzer
             }
             $entries[$file]['summaries'][$id] = $storage->inferred_throws;
             $entries[$file]['offsets'][$offset] = true;
+            $entries[$file]['method_offsets'][$id] = $offset;
             $entries[$file]['dependencies'] ??= [];
         }
         foreach ($this->throws_dependencies as $callee => $callers) {
@@ -532,7 +549,7 @@ final class Analyzer
                 }
             }
         }
-        $this->throws_cache?->save($entries);
+        $this->throws_cache?->save($entries, $this->throws_call_edges);
     }
 
     private function doUncachedAnalysis(ProjectAnalyzer $project_analyzer, int $pool_size): void
@@ -650,6 +667,7 @@ final class Analyzer
                 InferredThrowsBuffer::addContextSummaries($pool_data['throws_context_summaries']);
                 InferredThrowsBuffer::addDependencies($pool_data['throws_dependencies']);
                 InferredThrowsBuffer::addCallTargets($pool_data['throws_call_targets']);
+                InferredThrowsBuffer::addCallEdges($pool_data['throws_call_edges']);
 
                 $this->analyzed_methods = array_merge($pool_data['analyzed_methods'], $this->analyzed_methods);
 

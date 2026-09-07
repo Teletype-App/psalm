@@ -69,6 +69,7 @@ final class ShutdownAnalyzerTask implements Task
             'throws_context_summaries'                  => InferredThrowsBuffer::getContextSummaries(),
             'throws_dependencies'                       => InferredThrowsBuffer::getDependencies(),
             'throws_call_targets'                       => InferredThrowsBuffer::getCallTargets(),
+            'throws_call_edges'                         => InferredThrowsBuffer::getCallEdges(),
             'mutable_classes'                            => $codebase->analyzer->mutable_classes,
             'issue_handlers'                             => $codebase->config->getIssueHandlerSuppressions()
         ];
