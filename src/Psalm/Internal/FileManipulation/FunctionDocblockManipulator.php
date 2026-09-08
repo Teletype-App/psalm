@@ -1040,12 +1040,42 @@ final class FunctionDocblockManipulator
     }
 
     /**
+     * Keep edits for declarations that a throws convergence wave will not visit.
+     *
+     * @param array<string, array<int, true>|null> $targets
+     * @param array<string, array<int, int>> $declarations
+     * @psalm-external-mutation-free
+     */
+    public static function clearCacheForTargets(array $targets, array $declarations): void
+    {
+        foreach ($targets as $file => $offsets) {
+            if ($offsets === null || !isset($declarations[$file])) {
+                unset(self::$manipulators[$file]);
+                continue;
+            }
+            foreach (self::$manipulators[$file] ?? [] as $line => $manipulator) {
+                foreach ($declarations[$file] ?? [] as $start => $end) {
+                    if (isset($offsets[$start])
+                        && $manipulator->stmt->getStartFilePos() >= $start
+                        && $manipulator->stmt->getEndFilePos() <= $end
+                    ) {
+                        unset(self::$manipulators[$file][$line]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
      * @param array<string, array<int, FunctionDocblockManipulator>> $manipulators
      * @psalm-external-mutation-free
      */
     public static function addManipulators(array $manipulators): void
     {
-        self::$manipulators = [...$manipulators, ...self::$manipulators];
+        foreach ($manipulators as $file => $file_manipulators) {
+            self::$manipulators[$file] = (self::$manipulators[$file] ?? []) + $file_manipulators;
+        }
     }
 
     /**

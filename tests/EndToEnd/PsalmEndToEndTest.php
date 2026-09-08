@@ -1252,9 +1252,6 @@ final class PsalmEndToEndTest extends TestCase
     public function testSharedTraitSummariesSurvivePartialAnalysisWaves(): void
     {
         unlink(self::$tmpDir . '/src/FileWithErrors.php');
-        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
-            . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
-            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
         $files = [
             'Shared' => 'trait Shared { public function work(): void { $this->step(); } }',
             'Left' => 'class Left { use Shared; public function step(): void { (new Bridge())->go(); } }',
@@ -1267,6 +1264,12 @@ final class PsalmEndToEndTest extends TestCase
             file_put_contents(self::$tmpDir . '/src/' . $name . '.php', '<?php ' . $body);
         }
         foreach ([1, 2] as $threads) {
+            // Each worker count must start cold: a restored summary can hide
+            // a missing cross-file trait target during convergence.
+            file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+                . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false"'
+                . ' cacheDirectory="cache-' . $threads . '">'
+                . '<projectFiles><directory name="src" /></projectFiles></psalm>');
             $process = new Process([PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock',
                 '--threads=' . $threads, '--scan-threads=1', '--dry-run', '--no-progress',
                 self::$tmpDir . '/src/Entry.php'], self::$tmpDir);
@@ -1359,6 +1362,77 @@ final class PsalmEndToEndTest extends TestCase
         $broken = $run($args);
         $this->assertSame($normalize($forced->getOutput()), $normalize($broken->getOutput()));
         $this->assertStringNotContainsString('Reusing inferred throws:', $broken->getErrorOutput());
+    }
+
+    public function testThrowsConvergenceKeepsIndependentEditsAndDiagnostics(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="1" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        file_put_contents(self::$tmpDir . '/src/B.php', '<?php class B {'
+            . ' public static function run(): void { C::run(); } }');
+        $roots = [];
+        for ($i = 0; $i < 3; ++$i) {
+            $roots[] = self::$tmpDir . '/src/Root' . $i . '.php';
+        }
+        $run = static function (array $arguments): Process {
+            $process = new Process($arguments, self::$tmpDir);
+            $process->setTimeout(60);
+            $process->run();
+            return $process;
+        };
+        foreach ([1, 2] as $threads) {
+            foreach ([
+                ['throw new LogicException();', null, false],
+                ['if (rand(0, 1)) { throw new LogicException(); } throw new RuntimeException();',
+                    'RuntimeException', true],
+                ['', null, false],
+                ['throw new ErrorException();', 'ErrorException', true],
+            ] as [$body, $expected, $invalid]) {
+                file_put_contents(self::$tmpDir . '/src/C.php', '<?php class C {'
+                    . ' public static function run(): void { ' . $body . ' } }');
+                foreach ($roots as $i => $root) {
+                    file_put_contents($root, '<?php class Root' . $i . " {\n"
+                        . ' public function run(): void { try { B::run(); } catch (LogicException $e) {}'
+                        . ($invalid ? ' $this->accept(new stdClass());' : '') . " }\n"
+                        . " public function sibling(): void { throw new UnderflowException(); }\n"
+                        . " public function accept(DateTime \$date, ?ErrorException \$known = null): void {\n"
+                        . " echo \$date->format('c'); if (\$known) { echo \$known->getMessage(); } }\n}");
+                }
+                $args = [PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock', '--dry-run',
+                    '--no-progress', '--threads=' . $threads, '--scan-threads=1'];
+                $cached = $run([...$args, ...$roots]);
+                $this->assertSame(0, $cached->getExitCode(), $cached->getErrorOutput());
+                $normalize = static fn(string $text): string => preg_replace('/^Checks took .*$/m', '', $text);
+                $clean = $run([...$args, '--no-cache', ...$roots]);
+                $this->assertSame(0, $clean->getExitCode(), $clean->getErrorOutput());
+                $this->assertSame($normalize($clean->getOutput()), $normalize($cached->getOutput()));
+                $this->assertSame(3, substr_count($cached->getOutput(), '@throws UnderflowException'));
+                $this->assertStringNotContainsString('@throws LogicException', $cached->getOutput());
+                if ($expected !== null) {
+                    $this->assertSame(3, substr_count($cached->getOutput(), '@throws ' . $expected));
+                } else {
+                    $this->assertSame(3, substr_count($cached->getOutput(), '@throws'));
+                }
+                $this->assertStringNotContainsString('src/B.php:', $cached->getOutput());
+                $this->assertStringNotContainsString('src/C.php:', $cached->getOutput());
+                $diagnostic_args = [PHP_BINARY, $this->psalm, '--output-format=json', '--no-progress',
+                    '--threads=' . $threads, '--scan-threads=1'];
+                $diagnostics = $run([...$diagnostic_args, ...$roots]);
+                $clean_diagnostics = $run([...$diagnostic_args, '--no-cache', ...$roots]);
+                $this->assertSame($clean_diagnostics->getOutput(), $diagnostics->getOutput());
+                $issues = json_decode($diagnostics->getOutput(), true);
+                $invalid_count = 0;
+                foreach ($issues as $issue) {
+                    if ($issue['type'] === 'InvalidArgument') {
+                        ++$invalid_count;
+                    }
+                    $this->assertStringContainsString('/src/Root', $issue['file_path']);
+                }
+                $this->assertSame($invalid ? 3 : 0, $invalid_count);
+            }
+        }
     }
 
     public function testPersistentInferredThrowsWithoutDocblocks(): void

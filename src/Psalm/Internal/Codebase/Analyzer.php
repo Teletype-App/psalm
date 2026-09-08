@@ -781,12 +781,20 @@ final class Analyzer
         $dependencies = InferredThrowsBuffer::getDependencies();
         $summaries = InferredThrowsBuffer::getAll();
         $functions = [];
+        $caller_declarations = [];
+        foreach ($this->throwsStorages() as $storage) {
+            if ($storage->stmt_location !== null) {
+                $location = $storage->stmt_location;
+                $caller_declarations[$location->file_path][$location->raw_file_start] = $location->raw_file_end;
+            }
+        }
         foreach (FileStorageProvider::getAll() as $file_storage) {
             $functions += $file_storage->functions;
         }
 
         while ($summaries !== []) {
             $files_to_reanalyze = [];
+            $wave_targets = [];
 
             foreach ($summaries as $function_id => $new_throws) {
                 if (MethodIdentifier::isValidMethodIdReference($function_id)) {
@@ -818,7 +826,18 @@ final class Analyzer
 
                 foreach ($dependencies[$storage->location->file_path] ?? [] as $caller_file => $_) {
                     if (isset($this->files_to_analyze[$caller_file])) {
+                        $targets = $this->throwsCallerTargets($caller_file, $storage, $caller_declarations);
+                        if ($targets === []) {
+                            continue;
+                        }
                         $files_to_reanalyze[$caller_file] = $caller_file;
+                        if ($targets === null) {
+                            $wave_targets[$caller_file] = null;
+                        } elseif (!array_key_exists($caller_file, $wave_targets)) {
+                            $wave_targets[$caller_file] = $targets;
+                        } elseif ($wave_targets[$caller_file] !== null) {
+                            $wave_targets[$caller_file] += $targets;
+                        }
                     }
                 }
             }
@@ -827,17 +846,84 @@ final class Analyzer
                 break;
             }
 
+            $analysis_targets = $this->throws_analysis_targets;
+            foreach ($wave_targets as $file => &$targets) {
+                $allowed = $analysis_targets[$file] ?? null;
+                if ($allowed !== null) {
+                    $targets = $targets === null ? $allowed : array_intersect_key($targets, $allowed);
+                }
+                if ($targets === []) {
+                    unset($files_to_reanalyze[$file]);
+                }
+            }
+            unset($targets);
+            if ($files_to_reanalyze === []) {
+                break;
+            }
             InferredThrowsBuffer::clear();
-            FunctionDocblockManipulator::clearCacheForFiles($files_to_reanalyze);
+            // Execution files and physical declaration files can differ: a
+            // selected class can execute an already allowed trait body. Keep
+            // those permissions outside the wave's files without scheduling
+            // those files or widening targets within the selected callers.
+            $this->throws_analysis_targets = $wave_targets + ($analysis_targets ?? []);
+            FunctionDocblockManipulator::clearCacheForTargets($wave_targets, $caller_declarations);
             $files_to_analyze = $this->files_to_analyze;
             $this->files_to_analyze = $files_to_reanalyze;
             $this->doAnalysis($project_analyzer, $pool_size);
             $this->files_to_analyze = $files_to_analyze;
+            $this->throws_analysis_targets = $analysis_targets;
             $summaries = InferredThrowsBuffer::getAll();
             foreach (InferredThrowsBuffer::getDependencies() as $file_path => $callers) {
                 $dependencies[$file_path] = $callers + ($dependencies[$file_path] ?? []);
             }
         }
+    }
+
+    /**
+     * Use only call edges observed during this analysis. Missing positions (in
+     * particular calls through a shared trait) retain the file-level fallback.
+     * A position inside a closure selects its enclosing named declaration too.
+     *
+     * @return array<int, true>|null Null means the existing file scope.
+     * @param array<string, array<int, int>> $caller_declarations
+     */
+    private function throwsCallerTargets(
+        string $caller_file,
+        FunctionLikeStorage $callee,
+        array $caller_declarations,
+    ): ?array {
+        $callee_file = $callee->location?->file_path;
+        $callee_offset = $callee->stmt_location?->raw_file_start;
+        if ($callee_file === null || $callee_offset === null
+            || !isset($this->throws_call_edges[$caller_file])) {
+            return null;
+        }
+        $declarations = $caller_declarations[$caller_file] ?? [];
+        $targets = [];
+        $known_file = false;
+        foreach ($this->throws_call_edges[$caller_file] as $position => $callees) {
+            if (!isset($callees[$callee_file])) {
+                continue;
+            }
+            $known_file = true;
+            if ($position === -1 || isset($callees[$callee_file][-1])) {
+                return null;
+            }
+            if (!isset($callees[$callee_file][$callee_offset])) {
+                continue;
+            }
+            $found = false;
+            foreach ($declarations as $start => $end) {
+                if ($position >= $start && $position <= $end) {
+                    $targets[$start] = true;
+                    $found = true;
+                }
+            }
+            if (!$found) {
+                return null;
+            }
+        }
+        return $known_file ? $targets : null;
     }
 
     /**
