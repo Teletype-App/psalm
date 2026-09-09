@@ -66,7 +66,9 @@ final class FooMethodProvider implements
     public static function getMethodReturnType(MethodReturnTypeProviderEvent $event): ?Union
     {
         $method_name_lowercase = $event->getMethodNameLowercase();
-        if ($method_name_lowercase === 'magicmethod' || $method_name_lowercase === 'provided') {
+        if ($method_name_lowercase === 'magicmethod'
+            || ($method_name_lowercase === 'provided' && $event->getFqClasslikeName() === 'Ns\Base')
+        ) {
             return Type::getString();
         } else {
             return new Union([new TNamedObject('NS\\Foo2')]);
