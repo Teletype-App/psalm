@@ -31,7 +31,7 @@ final class FooMethodProvider implements
     #[Override]
     public static function getClassLikeNames(): array
     {
-        return ['Ns\Foo'];
+        return ['Ns\Base', 'Ns\Foo'];
     }
 
     /**
@@ -66,7 +66,7 @@ final class FooMethodProvider implements
     public static function getMethodReturnType(MethodReturnTypeProviderEvent $event): ?Union
     {
         $method_name_lowercase = $event->getMethodNameLowercase();
-        if ($method_name_lowercase === 'magicmethod') {
+        if ($method_name_lowercase === 'magicmethod' || $method_name_lowercase === 'provided') {
             return Type::getString();
         } else {
             return new Union([new TNamedObject('NS\\Foo2')]);
