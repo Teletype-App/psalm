@@ -641,6 +641,31 @@ final class AtomicMethodCallAnalyzer extends CallAnalyzer
 
                 $result->has_mixed_method_call = true;
 
+                if ($stmt->name instanceof PhpParser\Node\Identifier
+                    && $codebase->methods->return_type_provider->hasMixedHandlers()
+                ) {
+                    $return_type = $codebase->methods->return_type_provider->getMixedReturnType(
+                        $statements_analyzer,
+                        $stmt->name->name,
+                        $stmt,
+                        $context,
+                        new CodeLocation($statements_analyzer, $stmt->name),
+                    );
+
+                    if ($return_type) {
+                        ArgumentsAnalyzer::analyze(
+                            $statements_analyzer,
+                            $stmt->getArgs(),
+                            null,
+                            null,
+                            true,
+                            $context,
+                        );
+                        $result->return_type = $return_type;
+                        return;
+                    }
+                }
+
                 if ($lhs_type_part instanceof TObjectWithProperties
                     && $stmt->name instanceof PhpParser\Node\Identifier
                     && isset($lhs_type_part->methods[strtolower($stmt->name->name)])
