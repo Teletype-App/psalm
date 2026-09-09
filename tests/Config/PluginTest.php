@@ -78,6 +78,34 @@ final class PluginTest extends TestCase
         return $p;
     }
 
+    public function testAfterFunctionLikeAnalysisReceivesInferredReturnType(): void
+    {
+        $this->expectNotToPerformAssertions();
+
+        $config = TestConfig::loadFromXML(
+            dirname(__DIR__, 2) . DIRECTORY_SEPARATOR,
+            '<?xml version="1.0"?>
+            <psalm errorLevel="1">
+                <projectFiles>
+                    <directory name="src" />
+                </projectFiles>
+            </psalm>',
+        );
+        $this->project_analyzer = $this->getProjectAnalyzerWithConfig($config);
+        $config->eventDispatcher->registerClass(InferredReturnTypeChecker::class);
+
+        $file_path = (string) getcwd() . '/src/somefile.php';
+        $this->addFile(
+            $file_path,
+            '<?php
+                function mergeShapes(string $base, int $extra): array {
+                    return array_merge(["base" => $base], ["extra" => $extra]);
+                }',
+        );
+
+        $this->analyzeFile($file_path, new Context());
+    }
+
     public function testStringAnalyzerPlugin(): void
     {
         $this->expectExceptionMessage('InvalidClass');

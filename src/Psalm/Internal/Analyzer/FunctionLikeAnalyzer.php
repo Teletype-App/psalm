@@ -518,6 +518,8 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             );
         }
 
+        $inferred_return_type = null;
+
         if (!$this->function instanceof VirtualNode
             && ($this->function instanceof Function_
                 || $this->function instanceof ClassMethod
@@ -563,6 +565,10 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                         $codebase,
                     )
                     : Type::getVoid();
+
+                $inferred_return_type = $yield_types
+                    ? Type::combineUnionTypeArray($yield_types, $codebase)
+                    : $inferred_return;
                 
                 $isVoid = $inferred_return->isVoid();
             }
@@ -720,6 +726,8 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             if ($closure_yield_type) {
                 $closure_return_type = $closure_yield_type;
             }
+
+            $inferred_return_type = $closure_return_type;
 
             if ($function_type = $statements_analyzer->node_data->getType($this->function)) {
                 /**
@@ -1208,6 +1216,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             [],
             $type_provider,
             $context,
+            $inferred_return_type,
         );
 
         if ($codebase->config->eventDispatcher->dispatchAfterFunctionLikeAnalysis($event) === false) {

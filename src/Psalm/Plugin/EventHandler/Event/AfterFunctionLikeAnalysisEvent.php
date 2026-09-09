@@ -11,6 +11,7 @@ use Psalm\FileManipulation;
 use Psalm\NodeTypeProvider;
 use Psalm\StatementsSource;
 use Psalm\Storage\FunctionLikeStorage;
+use Psalm\Type\Union;
 
 /**
  * @psalm-external-mutation-free
@@ -32,6 +33,7 @@ final class AfterFunctionLikeAnalysisEvent
         private array $file_replacements,
         private readonly NodeTypeProvider $node_type_provider,
         private readonly Context $context,
+        private readonly ?Union $inferred_return_type = null,
     ) {
     }
 
@@ -99,5 +101,17 @@ final class AfterFunctionLikeAnalysisEvent
     public function getContext(): Context
     {
         return $this->context;
+    }
+
+    /**
+     * Returns the type inferred from the analyzed function body.
+     *
+     * The type is unavailable during initialization and mutation collection passes.
+     *
+     * @psalm-mutation-free
+     */
+    public function getInferredReturnType(): ?Union
+    {
+        return $this->inferred_return_type;
     }
 }
