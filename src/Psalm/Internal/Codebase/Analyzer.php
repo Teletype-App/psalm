@@ -600,6 +600,15 @@ final class Analyzer
         if ($location === null || $depth >= 16 || isset($visited[$id])) {
             return [['cycle or unavailable body']];
         }
+        if ($storage->inferred_throws === null
+            && !$this->config->isInProjectDirs($location->file_path)
+            && isset($storage->throws[$exception])
+        ) {
+            return [[
+                'external contract ' . $id . ' at '
+                    . $this->config->shortenFileName($location->file_path) . ':' . $location->raw_line_number,
+            ]];
+        }
         $visited[$id] = true;
 
         $paths = [];
@@ -610,9 +619,7 @@ final class Analyzer
             foreach ($callees as $callee_file => $offsets) {
                 foreach ($offsets as $offset => $_) {
                     $callee_id = $targets[$callee_file][$offset] ?? null;
-                    if ($callee_id === null
-                        || !isset($storages[$callee_id]->inferred_throws[$exception])
-                    ) {
+                    if ($callee_id === null || !$this->storageCanThrow($storages[$callee_id], $exception)) {
                         continue;
                     }
                     $call = 'call ' . $callee_id . ' at ' . $this->formatThrowsLocation(
@@ -644,6 +651,19 @@ final class Analyzer
             'throw/rethrow in ' . $id . ' at '
                 . $this->config->shortenFileName($location->file_path) . ':' . $location->raw_line_number,
         ]];
+    }
+
+    /** @psalm-mutation-free */
+    private function storageCanThrow(FunctionLikeStorage $storage, string $exception): bool
+    {
+        if (isset($storage->inferred_throws[$exception])) {
+            return true;
+        }
+        $location = $storage->stmt_location ?? $storage->location;
+        return $storage->inferred_throws === null
+            && $location !== null
+            && !$this->config->isInProjectDirs($location->file_path)
+            && isset($storage->throws[$exception]);
     }
 
     private function formatThrowsLocation(string $file, int $offset): string

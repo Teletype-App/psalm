@@ -981,12 +981,20 @@ final class Context
             );
         }
         $hash = $codelocation->getHash();
-        // A generated source-level throws summary must come from the
-        // implementation. A possibly stale @throws annotation must not seed
-        // callers while the implementation graph is converging.
+        // Project summaries must come from their implementation: their PHPDoc
+        // may be the stale text Psalter is about to replace. External code is a
+        // trust boundary, however, so its @throws declaration remains the API
+        // contract when no inferred body summary is available.
+        $external_contract = $function_storage->stmt_location !== null
+            && $statements_analyzer !== null
+            && !$statements_analyzer->getCodebase()->config->isInProjectDirs(
+                $function_storage->stmt_location->file_path,
+            );
         $throws = InferredThrowsBuffer::usesCodeOnlySummaries()
             ? ($function_storage->inferred_throws
-                ?? ($function_storage->stmt_location === null ? $function_storage->throws : []))
+                ?? ($function_storage->stmt_location === null || $external_contract
+                    ? $function_storage->throws
+                    : []))
             : ($function_storage->inferred_throws ?? $function_storage->throws);
         foreach ($throws as $possibly_thrown_exception => $_) {
             $translated_conditions = [];

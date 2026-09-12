@@ -97,6 +97,7 @@ final class PsalmEndToEndTest extends TestCase
     public function tearDown(): void
     {
         @unlink(self::$tmpDir . '/psalm.xml');
+        @unlink(self::$tmpDir . '/ExternalVendorService.php');
 
         if (file_exists(self::$tmpDir . '/.git')) {
             self::recursiveRemoveDirectory(self::$tmpDir . '/.git');
@@ -173,6 +174,94 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertStringContainsString('RuntimeException when #1=true', $report);
         $this->assertStringContainsString('call gateway::dispatch at src/FileWithErrors.php:', $report);
         $this->assertStringContainsString('throw/rethrow in gateway::dispatch', $report);
+    }
+
+    public function testPsalterUsesOnlyCalledExternalThrowsContracts(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        file_put_contents(
+            self::$tmpDir . '/ExternalVendorService.php',
+            <<<'PHP'
+                <?php
+
+                namespace ExternalPackage;
+
+                final class CalledService
+                {
+                    /** @throws \RuntimeException */
+                    public function execute(): void
+                    {
+                    }
+                }
+
+                final class UnusedService
+                {
+                    /** @throws \DomainException */
+                    public function execute(): void
+                    {
+                    }
+                }
+                PHP,
+        );
+
+        $selectedFile = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                require_once __DIR__ . '/../ExternalVendorService.php';
+
+                final class LocalService
+                {
+                    /** @throws LogicException */
+                    public function execute(): void
+                    {
+                    }
+                }
+
+                final class Worker
+                {
+                    /** @throws Throwable */
+                    public function run(ExternalPackage\CalledService $external, LocalService $local): void
+                    {
+                        $external->execute();
+                        $local->execute();
+                    }
+                }
+                PHP,
+        );
+
+        $result = $this->runPsalm(
+            [
+                '--alter',
+                '--show-inferred-throws',
+                '--no-cache',
+                '--no-progress',
+                '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+                $selectedFile,
+            ],
+            self::$tmpDir,
+            true,
+        );
+
+        $contents = (string) file_get_contents($selectedFile);
+        $this->assertSame(1, substr_count($contents, '@throws RuntimeException'), $contents);
+        $this->assertStringNotContainsString('@throws DomainException', $contents);
+        $this->assertStringNotContainsString('@throws LogicException', $contents);
+        $this->assertStringNotContainsString('@throws Throwable', $contents);
+        $this->assertStringContainsString(
+            'external contract externalpackage\\calledservice::execute',
+            $result['STDERR'],
+        );
     }
 
     public function testPsalterChangesOnlyFunctionsTouchedByGitDiff(): void
