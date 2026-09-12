@@ -24,6 +24,7 @@ use Psalm\Internal\Analyzer\Statements\ExpressionAnalyzer;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\FileManipulation\FileManipulationBuffer;
 use Psalm\Internal\FileManipulation\FunctionDocblockManipulator;
+use Psalm\Internal\FileManipulation\ThrowsDocblockImportResolver;
 use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\PhpVisitor\NodeCounterVisitor;
 use Psalm\Internal\Provider\NodeDataProvider;
@@ -32,6 +33,7 @@ use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Internal\Type\TemplateInferredTypeReplacer;
 use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TemplateStandinTypeReplacer;
+use Psalm\Internal\Type\TypeCombiner;
 use Psalm\Internal\Type\TypeExpander;
 use Psalm\Issue\ImpureFunctionCall;
 use Psalm\Issue\InvalidDocblockParamName;
@@ -46,6 +48,7 @@ use Psalm\Issue\MissingOverrideAttribute;
 use Psalm\Issue\MissingParamType;
 use Psalm\Issue\MissingPureAnnotation;
 use Psalm\Issue\MissingThrowsDocblock;
+use Psalm\Issue\OverlyBroadThrowsDocblock;
 use Psalm\Issue\ParadoxicalCondition;
 use Psalm\Issue\ReferenceConstraintViolation;
 use Psalm\Issue\ReservedWord;
@@ -53,6 +56,7 @@ use Psalm\Issue\UnresolvableConstant;
 use Psalm\Issue\UnusedClosureParam;
 use Psalm\Issue\UnusedDocblockParam;
 use Psalm\Issue\UnusedParam;
+use Psalm\Issue\UnusedThrowsDocblock;
 use Psalm\IssueBuffer;
 use Psalm\Node\Expr\VirtualVariable;
 use Psalm\Node\Stmt\VirtualWhile;
@@ -76,10 +80,12 @@ use UnexpectedValueException;
 
 use function array_combine;
 use function array_diff_key;
+use function array_fill_keys;
 use function array_key_exists;
 use function array_keys;
 use function array_merge;
 use function array_search;
+use function array_unique;
 use function array_values;
 use function count;
 use function end;
@@ -512,6 +518,8 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             );
         }
 
+        $inferred_return_type = null;
+
         if (!$this->function instanceof VirtualNode
             && ($this->function instanceof Function_
                 || $this->function instanceof ClassMethod
@@ -557,6 +565,10 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                         $codebase,
                     )
                     : Type::getVoid();
+
+                $inferred_return_type = $yield_types
+                    ? Type::combineUnionTypeArray($yield_types, $codebase)
+                    : $inferred_return;
                 
                 $isVoid = $inferred_return->isVoid();
             }
@@ -715,6 +727,8 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $closure_return_type = $closure_yield_type;
             }
 
+            $inferred_return_type = $closure_return_type;
+
             if ($function_type = $statements_analyzer->node_data->getType($this->function)) {
                 /**
                  * @var TClosure
@@ -815,50 +829,250 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             }
         }
 
-        $missingThrowsDocblockErrors = [];
-        foreach ($statements_analyzer->getUncaughtThrows($context) as $possibly_thrown_exception => $codelocations) {
-            $is_expected = false;
-
-            foreach ($storage->throws as $expected_exception => $_) {
-                if ($expected_exception === $possibly_thrown_exception
-                    || (
-                        $codebase->classOrInterfaceExists($possibly_thrown_exception, null, $context)
-                        && (
-                            $codebase->interfaceExtends($possibly_thrown_exception, $expected_exception)
-                            || $codebase->classExtendsOrImplements($possibly_thrown_exception, $expected_exception)
-                        )
-                    )
-                ) {
-                    $is_expected = true;
-                    break;
+        $documented_throws_analysis = ThrowsDocblockImportResolver::analyzeDocumentedThrows(
+            $this->source,
+            $this->function->getDocComment(),
+        );
+        $documented_throws = $storage->throws + $documented_throws_analysis['documented_throws'];
+        $uncaught_throws = $statements_analyzer->getUncaughtThrows($context);
+        if ($codebase->config->check_for_throws_docblock
+            && (!$codebase->alter_code
+                || isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock']))
+            && !$context->collect_initializations
+            && !$context->collect_mutations
+            && !$this instanceof ClosureAnalyzer
+        ) {
+            InferredThrowsBuffer::set(
+                $this->getId(),
+                array_fill_keys(array_keys($uncaught_throws), true),
+                self::getThrowsConditions($context, $uncaught_throws),
+            );
+        }
+        $missingThrowsDocblockExceptions = [];
+        if (!$context->collect_initializations
+            && !$context->collect_mutations
+            && !$this instanceof ClosureAnalyzer
+        ) {
+            foreach ($uncaught_throws as $possibly_thrown_exception => $codelocations) {
+                if (!ThrowsDocblockImportResolver::isValidClassLikeName($possibly_thrown_exception)) {
+                    continue;
                 }
-            }
 
-            if (!$is_expected) {
-                $missing_docblock_exception = new TNamedObject($possibly_thrown_exception);
-                $missingThrowsDocblockErrors[] = $missing_docblock_exception->toNamespacedString(
-                    $this->source->getNamespace(),
-                    $this->source->getAliasedClassesFlipped(),
-                    $this->source->getFQCLN(),
-                    true,
-                );
+                $is_expected = false;
+                $is_exactly_documented = false;
+                foreach ($documented_throws as $expected_exception => $_) {
+                    if (strtolower($possibly_thrown_exception) === strtolower($expected_exception)) {
+                        $is_exactly_documented = true;
+                    }
 
-                foreach ($codelocations as $codelocation) {
-                    // issues are suppressed in ThrowAnalyzer, CallAnalyzer, etc.
-                    IssueBuffer::maybeAdd(
-                        new MissingThrowsDocblock(
-                            $possibly_thrown_exception . ' is thrown but not caught - please either catch'
-                                . ' or add a @throws annotation',
-                            $codelocation,
-                            $possibly_thrown_exception,
-                        ),
-                    );
+                    if (self::isExceptionDocumented(
+                        $codebase,
+                        $context,
+                        $possibly_thrown_exception,
+                        $expected_exception,
+                    )) {
+                        $is_expected = true;
+                        if ($is_exactly_documented) {
+                            break;
+                        }
+                    }
+                }
+
+                $should_add_exact_documentation = !$is_exactly_documented
+                    && $codebase->alter_code
+                    && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock']);
+                if (!$is_expected || $should_add_exact_documentation) {
+                    $missingThrowsDocblockExceptions[] = new TNamedObject($possibly_thrown_exception);
+                }
+
+                if (!$is_expected) {
+                    foreach ($codelocations as $codelocation) {
+                        // issues are suppressed in ThrowAnalyzer, CallAnalyzer, etc.
+                        IssueBuffer::maybeAdd(
+                            new MissingThrowsDocblock(
+                                $possibly_thrown_exception . ' is thrown but not caught - please either catch'
+                                    . ' or add a @throws annotation',
+                                $codelocation,
+                                $possibly_thrown_exception,
+                            ),
+                        );
+                    }
                 }
             }
         }
 
-        if ($codebase->alter_code
+        $unusedThrowsDocblockExceptions = [];
+        $overlyBroadThrowsDocblockReplacements = [];
+        $overlyBroadThrowsDocblockImports = [];
+        if (!$context->collect_initializations
+            && !$context->collect_mutations
+            && !$this instanceof ClosureAnalyzer
+            && $codebase->config->check_for_throws_docblock
+            && !($this->function instanceof ClassMethod && $this->function->stmts === null)
+        ) {
+            $documented_throws_to_check = $statements_analyzer->filterIgnoredExceptions(
+                $documented_throws_analysis['documented_throws'],
+                $context,
+            );
+
+            foreach ($documented_throws_to_check as $documented_exception => $_) {
+                $is_thrown = false;
+                // Ignoring an exception does not make an annotation covering it unused.
+                foreach ($context->possibly_thrown_exceptions as $possibly_thrown_exception => $_) {
+                    if (self::isExceptionDocumented(
+                        $codebase,
+                        $context,
+                        $possibly_thrown_exception,
+                        $documented_exception,
+                    )) {
+                        $is_thrown = true;
+                        break;
+                    }
+                }
+
+                if ($is_thrown || !isset($storage->throw_locations[$documented_exception])) {
+                    continue;
+                }
+
+                $issue = new UnusedThrowsDocblock(
+                    $documented_exception . ' is documented in @throws but is not found among inferred'
+                        . ' uncaught exceptions',
+                    $storage->throw_locations[$documented_exception],
+                    $documented_exception,
+                );
+
+                if (!IssueBuffer::isSuppressed($issue, $storage->suppressed_issues)
+                    && !isset($documented_throws_analysis['described_throws'][$documented_exception])
+                ) {
+                    $documented_throw_names =
+                        $documented_throws_analysis['documented_throw_names'][$documented_exception];
+                    foreach ($documented_throw_names as $throw_name) {
+                        $unusedThrowsDocblockExceptions[] = $throw_name;
+                    }
+                }
+
+                IssueBuffer::maybeAdd($issue, $storage->suppressed_issues, true);
+            }
+
+            $check_overly_broad_throws = isset(
+                $codebase->config->getIssueHandlers()['OverlyBroadThrowsDocblock'],
+            ) || isset($project_analyzer->getIssuesToFix()['OverlyBroadThrowsDocblock']);
+
+            if ($check_overly_broad_throws) {
+                foreach ($documented_throws_to_check as $documented_exception => $_) {
+                    $inferred_exception_names = [];
+                    $is_exactly_thrown = false;
+
+                    foreach ($uncaught_throws as $possibly_thrown_exception => $_) {
+                        if (!self::isExceptionDocumented(
+                            $codebase,
+                            $context,
+                            $possibly_thrown_exception,
+                            $documented_exception,
+                        )) {
+                            continue;
+                        }
+
+                        if (strtolower($possibly_thrown_exception) === strtolower($documented_exception)) {
+                            $is_exactly_thrown = true;
+                            break;
+                        }
+
+                        if (ThrowsDocblockImportResolver::isValidClassLikeName($possibly_thrown_exception)) {
+                            $inferred_exception_names[] = $possibly_thrown_exception;
+                        }
+                    }
+
+                    if ($is_exactly_thrown
+                        || $inferred_exception_names === []
+                        || !isset($storage->throw_locations[$documented_exception])
+                    ) {
+                        continue;
+                    }
+
+                    $replacement_exception_types = [];
+                    foreach ($inferred_exception_names as $inferred_exception) {
+                        foreach ($documented_throws_analysis['documented_throws'] as $other_exception => $_) {
+                            if (strtolower($other_exception) === strtolower($documented_exception)
+                                || !self::isExceptionDocumented(
+                                    $codebase,
+                                    $context,
+                                    $other_exception,
+                                    $documented_exception,
+                                )
+                                || !self::isExceptionDocumented(
+                                    $codebase,
+                                    $context,
+                                    $inferred_exception,
+                                    $other_exception,
+                                )
+                            ) {
+                                continue;
+                            }
+
+                            continue 2;
+                        }
+
+                        $replacement_exception_types[] = new TNamedObject($inferred_exception);
+                    }
+
+                    $replacement_exceptions = [];
+                    $replacement_imports = [];
+                    if ($replacement_exception_types !== []) {
+                        $combined_exceptions = TypeCombiner::combine($replacement_exception_types, $codebase);
+                        [$replacement_exceptions, $replacement_imports] = ThrowsDocblockImportResolver::resolve(
+                            $this->source,
+                            array_values($combined_exceptions->getAtomicTypes()),
+                        );
+                    }
+
+                    $issue = new OverlyBroadThrowsDocblock(
+                        $documented_exception . ' is broader than inferred uncaught exceptions '
+                            . implode('|', $inferred_exception_names),
+                        $storage->throw_locations[$documented_exception],
+                        $documented_exception,
+                    );
+
+                    if (!IssueBuffer::isSuppressed($issue, $storage->suppressed_issues)
+                        && !isset($documented_throws_analysis['described_throws'][$documented_exception])
+                    ) {
+                        $documented_throw_names =
+                            $documented_throws_analysis['documented_throw_names'][$documented_exception];
+                        foreach ($documented_throw_names as $throw_name) {
+                            $overlyBroadThrowsDocblockReplacements[$throw_name] = $replacement_exceptions;
+                        }
+
+                        $overlyBroadThrowsDocblockImports = array_merge(
+                            $overlyBroadThrowsDocblockImports,
+                            $replacement_imports,
+                        );
+                    }
+
+                    IssueBuffer::maybeAdd($issue, $storage->suppressed_issues, true);
+                }
+            }
+        }
+
+        $missingThrowsDocblockErrors = [];
+        $missingThrowsDocblockImports = [];
+        if ($missingThrowsDocblockExceptions) {
+            [$missingThrowsDocblockErrors, $missingThrowsDocblockImports] = ThrowsDocblockImportResolver::resolve(
+                $this->source,
+                $missingThrowsDocblockExceptions,
+            );
+        }
+
+        $function_start_line = $this->function->getDocComment()?->getStartLine()
+            ?? $this->function->getStartLine();
+
+        if (($missingThrowsDocblockErrors !== [] || $documented_throws_analysis['has_duplicates'])
+            && $codebase->alter_code
             && isset($project_analyzer->getIssuesToFix()['MissingThrowsDocblock'])
+            && $project_analyzer->canFixFunctionLike(
+                $this->getFilePath(),
+                $function_start_line,
+                $this->function->getEndLine(),
+            )
             && !$this->function instanceof VirtualNode
         ) {
             $manipulator = FunctionDocblockManipulator::getForFunction(
@@ -866,7 +1080,51 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $this->source->getFilePath(),
                 $this->function,
             );
-            $manipulator->addThrowsDocblock($missingThrowsDocblockErrors);
+            $manipulator->addThrowsDocblock(
+                $missingThrowsDocblockErrors,
+                $missingThrowsDocblockImports,
+                $project_analyzer,
+            );
+        }
+
+        if ($unusedThrowsDocblockExceptions !== []
+            && $codebase->alter_code
+            && isset($project_analyzer->getIssuesToFix()['UnusedThrowsDocblock'])
+            && $project_analyzer->canFixFunctionLike(
+                $this->getFilePath(),
+                $function_start_line,
+                $this->function->getEndLine(),
+            )
+            && !$this->function instanceof VirtualNode
+        ) {
+            $manipulator = FunctionDocblockManipulator::getForFunction(
+                $project_analyzer,
+                $this->source->getFilePath(),
+                $this->function,
+            );
+            $manipulator->removeThrowsDocblock($unusedThrowsDocblockExceptions);
+        }
+
+        if ($overlyBroadThrowsDocblockReplacements !== []
+            && $codebase->alter_code
+            && isset($project_analyzer->getIssuesToFix()['OverlyBroadThrowsDocblock'])
+            && $project_analyzer->canFixFunctionLike(
+                $this->getFilePath(),
+                $function_start_line,
+                $this->function->getEndLine(),
+            )
+            && !$this->function instanceof VirtualNode
+        ) {
+            $manipulator = FunctionDocblockManipulator::getForFunction(
+                $project_analyzer,
+                $this->source->getFilePath(),
+                $this->function,
+            );
+            $manipulator->replaceThrowsDocblock(
+                $overlyBroadThrowsDocblockReplacements,
+                array_values(array_unique($overlyBroadThrowsDocblockImports)),
+                $project_analyzer,
+            );
         }
 
         if ($codebase->taint_flow_graph
@@ -957,6 +1215,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             [],
             $type_provider,
             $context,
+            $inferred_return_type,
         );
 
         if ($codebase->config->eventDispatcher->dispatchAfterFunctionLikeAnalysis($event) === false) {
@@ -1239,6 +1498,10 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
 
             $context->vars_in_scope[$function_param_id] = $var_type;
             $context->vars_possibly_in_scope[$function_param_id] = true;
+
+            if (!$function_param->by_ref) {
+                $context->throws_conditional_params[$function_param_id] = $offset;
+            }
 
             if ($function_param->by_ref) {
                 $context->vars_in_scope[$function_param_id] =
@@ -1629,11 +1892,13 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $this->source->getAliasedClassesFlipped(),
                 $this->source->getFQCLN(),
                 false,
+                true,
             ),
             $inferred_return_type->toNamespacedString(
                 $this->source->getNamespace(),
                 $this->source->getAliasedClassesFlipped(),
                 $this->source->getFQCLN(),
+                true,
                 true,
             ),
         );
@@ -2319,6 +2584,49 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         }
 
         return $unused_params;
+    }
+
+    /**
+     * @psalm-external-mutation-free
+     */
+    private static function isExceptionDocumented(
+        Codebase $codebase,
+        Context $context,
+        string $possibly_thrown_exception,
+        string $documented_exception,
+    ): bool {
+        return strtolower($documented_exception) === strtolower($possibly_thrown_exception)
+            || (
+                $codebase->classOrInterfaceExists($possibly_thrown_exception, null, $context)
+                && (
+                    $codebase->interfaceExtends($possibly_thrown_exception, $documented_exception)
+                    || $codebase->classExtendsOrImplements($possibly_thrown_exception, $documented_exception)
+                )
+            );
+    }
+
+    /**
+     * @param array<string, array<array-key, CodeLocation>> $uncaught_throws
+     * @return array<string, list<array<int, bool|int|string|null>>>
+     * @psalm-mutation-free
+     */
+    private static function getThrowsConditions(Context $context, array $uncaught_throws): array
+    {
+        $result = [];
+        foreach ($uncaught_throws as $exception => $locations) {
+            foreach ($locations as $hash => $_) {
+                foreach ($context->possibly_thrown_exception_conditions[$exception][$hash] ?? [[]] as $condition) {
+                    if ($condition === []) {
+                        $result[$exception] = [[]];
+                        continue 3;
+                    }
+                    if (!in_array($condition, $result[$exception] ?? [], true)) {
+                        $result[$exception][] = $condition;
+                    }
+                }
+            }
+        }
+        return $result;
     }
 
     /**

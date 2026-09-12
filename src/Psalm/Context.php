@@ -5,29 +5,43 @@ declare(strict_types=1);
 namespace Psalm;
 
 use InvalidArgumentException;
+use PhpParser\Node\Arg;
+use PhpParser\Node\Expr;
+use PhpParser\Node\Expr\ConstFetch;
+use PhpParser\Node\Expr\Variable;
+use PhpParser\Node\Scalar\Int_;
+use PhpParser\Node\Scalar\String_;
+use Psalm\Internal\Analyzer\InferredThrowsBuffer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
+use Psalm\Internal\Analyzer\ThrownExceptionOrigin;
 use Psalm\Internal\Clause;
 use Psalm\Internal\ReferenceConstraint;
 use Psalm\Internal\Scope\CaseScope;
 use Psalm\Internal\Scope\FinallyScope;
 use Psalm\Internal\Scope\LoopScope;
 use Psalm\Internal\Type\AssertionReconciler;
+use Psalm\Internal\Type\TypeExpander;
 use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Storage\Mutations;
 use Psalm\Type\Atomic\DependentType;
+use Psalm\Type\Atomic\TEnumCase;
 use Psalm\Type\Atomic\TIntRange;
 use Psalm\Type\Atomic\TNull;
 use Psalm\Type\Union;
 use RuntimeException;
 
+use function array_key_exists;
 use function array_keys;
 use function array_search;
 use function array_shift;
 use function assert;
 use function count;
 use function in_array;
+use function is_bool;
 use function is_int;
+use function is_string;
 use function json_encode;
+use function ksort;
 use function preg_match;
 use function preg_quote;
 use function preg_replace;
@@ -39,6 +53,7 @@ use const JSON_THROW_ON_ERROR;
 
 final class Context
 {
+    private const MAX_THROWS_CONDITIONS = 64;
     /**
      * @var array<string, Union>
      */
@@ -256,6 +271,19 @@ final class Context
      * @var array<string, array<array-key, CodeLocation>>
      */
     public array $possibly_thrown_exceptions = [];
+
+    /**
+     * Origins for the exception locations stored in possibly_thrown_exceptions.
+     *
+     * @var array<string, array<array-key, int>>
+     */
+    public array $possibly_thrown_exception_origins = [];
+
+    /** @var array<string, array<array-key, list<array<int, bool|int|string|null>>>> */
+    public array $possibly_thrown_exception_conditions = [];
+
+    /** @var array<string, int> Function scalar parameter variable => parameter offset. */
+    public array $throws_conditional_params = [];
 
     public bool $is_global = false;
 
@@ -855,13 +883,61 @@ final class Context
         foreach ($other_context->possibly_thrown_exceptions as $possibly_thrown_exception => $codelocations) {
             foreach ($codelocations as $hash => $codelocation) {
                 $this->possibly_thrown_exceptions[$possibly_thrown_exception][$hash] = $codelocation;
+                $origin = $other_context->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash]
+                    ?? ThrownExceptionOrigin::PROPAGATED;
+                $this->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash] =
+                    ($this->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash] ?? 0) | $origin;
+                foreach ($other_context->possibly_thrown_exception_conditions[$possibly_thrown_exception][$hash]
+                    ?? [[]] as $condition
+                ) {
+                    $this->addThrownExceptionCondition($possibly_thrown_exception, $hash, $condition);
+                }
             }
         }
     }
 
     /**
+     * @return array<int, bool|int|string|null>
+     * @psalm-mutation-free
+     */
+    public function getCurrentThrowsCondition(): array
+    {
+        $condition = [];
+        foreach ($this->throws_conditional_params as $var_id => $offset) {
+            if (isset($this->assigned_var_ids[$var_id])) {
+                continue;
+            }
+            $type = $this->vars_in_scope[$var_id] ?? null;
+            if ($type === null) {
+                continue;
+            }
+            $known = self::getKnownConditionalTypeValue($type);
+            if ($known[0]) {
+                $condition[$offset] = $known[1];
+            }
+        }
+        return $condition;
+    }
+
+    /**
+     * @param array<int, bool|int|string|null> $condition
      * @psalm-external-mutation-free
      */
+    public function addThrownExceptionCondition(string $exception, int|string $hash, array $condition): void
+    {
+        ksort($condition);
+        foreach ($this->possibly_thrown_exception_conditions[$exception][$hash] ?? [] as $existing) {
+            if ($existing === $condition) {
+                return;
+            }
+        }
+        $this->possibly_thrown_exception_conditions[$exception][$hash][] = $condition;
+        if (count($this->possibly_thrown_exception_conditions[$exception][$hash]) > self::MAX_THROWS_CONDITIONS) {
+            $this->possibly_thrown_exception_conditions[$exception][$hash] = [[]];
+        }
+    }
+
+    /** @psalm-external-mutation-free */
     public function isSuppressingExceptions(StatementsAnalyzer $statements_analyzer): bool
     {
         if (!$this->collect_exceptions) {
@@ -885,16 +961,279 @@ final class Context
     }
 
     /**
+     * @param list<Arg> $args
      * @psalm-external-mutation-free
      */
     public function mergeFunctionExceptions(
         FunctionLikeStorage $function_storage,
         CodeLocation $codelocation,
+        array $args = [],
+        ?StatementsAnalyzer $statements_analyzer = null,
     ): void {
-        $hash = $codelocation->getHash();
-        foreach ($function_storage->throws as $possibly_thrown_exception => $_) {
-            $this->possibly_thrown_exceptions[$possibly_thrown_exception][$hash] = $codelocation;
+        // Record calls even when their current summary is empty: an unselected
+        // implementation may throw exceptions that are absent from its docblock.
+        if ($function_storage->stmt_location !== null) {
+            InferredThrowsBuffer::addDependency(
+                $function_storage->stmt_location->file_path,
+                $function_storage->stmt_location->raw_file_start,
+                $codelocation->file_path,
+                $codelocation->raw_file_start,
+            );
         }
+        $hash = $codelocation->getHash();
+        // A generated source-level throws summary must come from the
+        // implementation. A possibly stale @throws annotation must not seed
+        // callers while the implementation graph is converging.
+        $throws = InferredThrowsBuffer::usesCodeOnlySummaries()
+            ? ($function_storage->inferred_throws
+                ?? ($function_storage->stmt_location === null ? $function_storage->throws : []))
+            : ($function_storage->inferred_throws ?? $function_storage->throws);
+        foreach ($throws as $possibly_thrown_exception => $_) {
+            $translated_conditions = [];
+            $conditions = $function_storage->inferred_throws_conditions[$possibly_thrown_exception] ?? [[]];
+            foreach ($conditions as $condition) {
+                $translated = $this->translateThrowsCondition(
+                    $function_storage,
+                    $args,
+                    $condition,
+                    $statements_analyzer,
+                );
+                if ($translated !== null) {
+                    $translated_conditions[] = $translated;
+                }
+            }
+            if ($translated_conditions === []) {
+                continue;
+            }
+            $this->possibly_thrown_exceptions[$possibly_thrown_exception][$hash] = $codelocation;
+            $this->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash] =
+                ThrownExceptionOrigin::PROPAGATED;
+            foreach ($translated_conditions as $translated) {
+                $this->addThrownExceptionCondition($possibly_thrown_exception, $hash, $translated);
+            }
+        }
+    }
+
+    /**
+     * @param list<Arg> $args
+     * @param array<int, bool|int|string|null> $condition
+     * @return array<int, bool|int|string|null>|null Null means this call cannot satisfy the condition.
+     * @psalm-mutation-free
+     */
+    private function translateThrowsCondition(
+        FunctionLikeStorage $storage,
+        array $args,
+        array $condition,
+        ?StatementsAnalyzer $statements_analyzer,
+    ): ?array {
+        $translated = $this->getCurrentThrowsCondition();
+        foreach ($condition as $offset => $required) {
+            $arg = $this->getArgumentForParameter($storage, $args, $offset);
+            $known = $arg === null
+                ? self::getDefaultConditionalValue($storage, $offset)
+                : $this->getKnownConditionalValue($arg->value, $statements_analyzer);
+            if ($known[0]) {
+                if ($known[1] !== $required) {
+                    return null;
+                }
+                continue;
+            }
+            if ($arg !== null) {
+                $constraint = $this->getThrowsParamConstraint($arg->value, $required);
+                if ($constraint !== null) {
+                    [$caller_offset, $caller_required] = $constraint;
+                    if (array_key_exists($caller_offset, $translated)
+                        && $translated[$caller_offset] !== $caller_required
+                    ) {
+                        return null;
+                    }
+                    $translated[$caller_offset] = $caller_required;
+                }
+            }
+        }
+        ksort($translated);
+        return $translated;
+    }
+
+    /**
+     * @param list<Arg> $args
+     * @psalm-mutation-free
+     */
+    private static function getArgumentForParameter(
+        FunctionLikeStorage $storage,
+        array $args,
+        int $offset,
+    ): ?Arg {
+        foreach ($args as $arg_offset => $arg) {
+            if ($arg->name === null && $arg_offset === $offset) {
+                return $arg;
+            }
+            if ($arg->name !== null && ($storage->params[$offset]->name ?? null) === $arg->name->name) {
+                return $arg;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * @return array{bool, bool|int|string|null}
+     * @psalm-mutation-free
+     */
+    private static function getLiteralConditionalValue(Expr $expr): array
+    {
+        if ($expr instanceof String_ || $expr instanceof Int_) {
+            return [true, $expr->value];
+        }
+        if ($expr instanceof ConstFetch) {
+            return match (strtolower($expr->name->toString())) {
+                'true' => [true, true],
+                'false' => [true, false],
+                'null' => [true, null],
+                default => [false, null],
+            };
+        }
+        return [false, null];
+    }
+
+    /**
+     * @return array{bool, bool|int|string|null}
+     * @psalm-mutation-free
+     */
+    private static function getKnownConditionalTypeValue(Union $type): array
+    {
+        if ($type->isTrue()) {
+            return [true, true];
+        }
+        if ($type->isFalse()) {
+            return [true, false];
+        }
+        if ($type->isNull()) {
+            return [true, null];
+        }
+        if ($type->isSingleStringLiteral()) {
+            return [true, $type->getSingleStringLiteral()->value];
+        }
+        if ($type->isSingleIntLiteral()) {
+            return [true, $type->getSingleIntLiteral()->value];
+        }
+        if ($type->isSingle() && $type->getSingleAtomic() instanceof TEnumCase) {
+            $enum_case = $type->getSingleAtomic();
+            return [true, "\0enum:" . $enum_case->value . '::' . $enum_case->case_name];
+        }
+        return [false, null];
+    }
+
+    /**
+     * @return array{bool, bool|int|string|null}
+     * @psalm-mutation-free
+     * @psalm-suppress ImpureMethodCall NodeDataProvider reads an object-keyed cache.
+     */
+    private function getKnownConditionalValue(Expr $expr, ?StatementsAnalyzer $statements_analyzer = null): array
+    {
+        $literal = self::getLiteralConditionalValue($expr);
+        if ($literal[0]) {
+            return $literal;
+        }
+        if ($statements_analyzer !== null
+            && ($expression_type = $statements_analyzer->node_data->getType($expr)) !== null
+        ) {
+            $expression_type = TypeExpander::expandUnion(
+                $statements_analyzer->getCodebase(),
+                $expression_type,
+                $this->self,
+                $this->self,
+                null,
+            );
+            $known = self::getKnownConditionalTypeValue($expression_type);
+            if ($known[0]) {
+                return $known;
+            }
+        }
+        if ($expr instanceof Expr\BooleanNot) {
+            $inner = $this->getKnownBool($expr->expr, $statements_analyzer);
+            return $inner === null ? [false, null] : [true, !$inner];
+        }
+        if ($expr instanceof Variable && is_string($expr->name)) {
+            $type = $this->vars_in_scope['$' . $expr->name] ?? null;
+            return $type === null ? [false, null] : self::getKnownConditionalTypeValue($type);
+        }
+        if ($expr instanceof Expr\BinaryOp\Identical || $expr instanceof Expr\BinaryOp\NotIdentical) {
+            $left = $this->getKnownConditionalValue($expr->left, $statements_analyzer);
+            $right = $this->getKnownConditionalValue($expr->right, $statements_analyzer);
+            if ($left[0] && $right[0]) {
+                $identical = $left[1] === $right[1];
+                return [true, $expr instanceof Expr\BinaryOp\Identical ? $identical : !$identical];
+            }
+        }
+        return [false, null];
+    }
+
+    /** @psalm-mutation-free */
+    private function getKnownBool(Expr $expr, ?StatementsAnalyzer $statements_analyzer = null): ?bool
+    {
+        $known = $this->getKnownConditionalValue($expr, $statements_analyzer);
+        return $known[0] && is_bool($known[1]) ? $known[1] : null;
+    }
+
+    /**
+     * @return array{int, bool|int|string|null}|null
+     * @psalm-mutation-free
+     */
+    private function getThrowsParamConstraint(Expr $expr, bool|int|string|null $required): ?array
+    {
+        $inverted = false;
+        while (is_bool($required) && $expr instanceof Expr\BooleanNot) {
+            $inverted = !$inverted;
+            $expr = $expr->expr;
+        }
+
+        if ($expr instanceof Expr\BinaryOp\Identical || $expr instanceof Expr\BinaryOp\NotIdentical) {
+            $literal = self::getLiteralConditionalValue($expr->right);
+            if (is_bool($required) && $literal[0]
+                && ($required === ($expr instanceof Expr\BinaryOp\Identical))
+            ) {
+                $required = $literal[1];
+                if ($inverted && !is_bool($required)) {
+                    return null;
+                }
+                return $this->getThrowsParamConstraint($expr->left, $inverted ? !$required : $required);
+            }
+            $literal = self::getLiteralConditionalValue($expr->left);
+            if (is_bool($required) && $literal[0]
+                && ($required === ($expr instanceof Expr\BinaryOp\Identical))
+            ) {
+                $required = $literal[1];
+                if ($inverted && !is_bool($required)) {
+                    return null;
+                }
+                return $this->getThrowsParamConstraint($expr->right, $inverted ? !$required : $required);
+            }
+            return null;
+        }
+
+        if (!$expr instanceof Variable || !is_string($expr->name)) {
+            return null;
+        }
+        $var_id = '$' . $expr->name;
+        $offset = $this->throws_conditional_params[$var_id] ?? null;
+        if ($offset === null || isset($this->assigned_var_ids[$var_id])) {
+            return null;
+        }
+        return [$offset, $inverted && is_bool($required) ? !$required : $required];
+    }
+
+    /** @psalm-mutation-free */
+    /**
+     * @return array{bool, bool|int|string|null}
+     * @psalm-mutation-free
+     */
+    private static function getDefaultConditionalValue(FunctionLikeStorage $storage, int $offset): array
+    {
+        $default = $storage->params[$offset]->default_type ?? null;
+        if (!$default instanceof Union) {
+            return [false, null];
+        }
+        return self::getKnownConditionalTypeValue($default);
     }
 
     /**

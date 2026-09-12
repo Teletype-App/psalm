@@ -104,6 +104,19 @@ final class FunctionCallReturnTypeFetcher
             );
         }
 
+        if (!$stmt->isFirstClassCallable()
+            && (!$in_call_map || $is_stubbed)
+            && $function_storage
+            && !$context->isSuppressingExceptions($statements_analyzer)
+        ) {
+            $context->mergeFunctionExceptions(
+                $function_storage,
+                new CodeLocation($statements_analyzer->getSource(), $stmt),
+                $stmt->getArgs(),
+                $statements_analyzer,
+            );
+        }
+
         if (!$stmt_type) {
             if (!$in_call_map || $is_stubbed) {
                 if ($function_storage && $function_storage->template_types) {
@@ -147,13 +160,6 @@ final class FunctionCallReturnTypeFetcher
                             }
                         }
                     }
-                }
-
-                if ($function_storage && !$context->isSuppressingExceptions($statements_analyzer)) {
-                    $context->mergeFunctionExceptions(
-                        $function_storage,
-                        new CodeLocation($statements_analyzer->getSource(), $stmt),
-                    );
                 }
 
                 try {

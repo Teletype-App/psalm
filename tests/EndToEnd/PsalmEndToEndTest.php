@@ -9,26 +9,38 @@ use Override;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Process\Process;
 
+use function array_keys;
+use function array_slice;
 use function assert;
 use function closedir;
 use function copy;
 use function file_exists;
 use function file_get_contents;
 use function file_put_contents;
+use function filemtime;
 use function getcwd;
+use function glob;
 use function is_dir;
 use function is_string;
+use function json_decode;
+use function json_encode;
 use function mkdir;
 use function opendir;
 use function preg_replace;
 use function readdir;
 use function rmdir;
 use function str_replace;
+use function strpos;
+use function substr;
+use function substr_count;
 use function sys_get_temp_dir;
 use function tempnam;
+use function touch;
+use function trim;
 use function unlink;
 
 use const DIRECTORY_SEPARATOR;
+use const JSON_THROW_ON_ERROR;
 use const PHP_BINARY;
 
 /**
@@ -86,6 +98,10 @@ final class PsalmEndToEndTest extends TestCase
     {
         @unlink(self::$tmpDir . '/psalm.xml');
 
+        if (file_exists(self::$tmpDir . '/.git')) {
+            self::recursiveRemoveDirectory(self::$tmpDir . '/.git');
+        }
+
         if (file_exists(self::$tmpDir . '/cache')) {
             self::recursiveRemoveDirectory(self::$tmpDir . '/cache');
         }
@@ -99,7 +115,500 @@ final class PsalmEndToEndTest extends TestCase
 
     public function testHelpReturnsMessage(): void
     {
-        $this->assertStringContainsString('Usage:', $this->runPsalm(['--help'], self::$tmpDir)['STDOUT']);
+        $output = $this->runPsalm(['--help'], self::$tmpDir)['STDOUT'];
+
+        $this->assertStringContainsString('Usage:', $output);
+        $this->assertStringContainsString('--find-unused-variables', $output);
+        $this->assertStringContainsString('--show-inferred-throws', $output);
+    }
+
+    public function testPsalterHelpContainsFindUnusedVariablesOption(): void
+    {
+        $output = $this->runPsalm(['--alter', '--help'], self::$tmpDir)['STDOUT'];
+
+        $this->assertStringContainsString('--find-unused-variables', $output);
+        $this->assertStringContainsString('--changed', $output);
+        $this->assertStringContainsString('--show-inferred-throws', $output);
+    }
+
+    public function testShowInferredThrowsExplainsCallChainAndConditions(): void
+    {
+        $this->runPsalmInit();
+        $file = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file,
+            <<<'PHP'
+                <?php
+
+                final class Gateway
+                {
+                    /** @throws RuntimeException */
+                    public function dispatch(bool $fail): void
+                    {
+                        if ($fail) {
+                            throw new RuntimeException();
+                        }
+                    }
+                }
+
+                final class Worker
+                {
+                    /** @throws RuntimeException */
+                    public function run(Gateway $gateway, bool $fail): void
+                    {
+                        $gateway->dispatch($fail);
+                    }
+                }
+                PHP,
+        );
+
+        $result = $this->runPsalm(
+            ['--show-inferred-throws', '--no-cache', '--no-progress'],
+            self::$tmpDir,
+            true,
+        );
+        $report = $result['STDERR'];
+        $this->assertStringContainsString('Inferred throws:', $report);
+        $this->assertStringContainsString('worker::run', $report);
+        $this->assertStringContainsString('RuntimeException when #1=true', $report);
+        $this->assertStringContainsString('call gateway::dispatch at src/FileWithErrors.php:', $report);
+        $this->assertStringContainsString('throw/rethrow in gateway::dispatch', $report);
+    }
+
+    public function testPsalterChangesOnlyFunctionsTouchedByGitDiff(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                function changed(): void
+                {
+                    throw new \RuntimeException();
+                }
+
+                function unchanged(): void
+                {
+                    throw new \LogicException();
+                }
+                PHP,
+        );
+
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'psalm.xml', 'src/FileWithErrors.php'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        file_put_contents($file_path, str_replace('RuntimeException();', 'RuntimeException("changed");', $contents));
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--changed',
+            '--issues=MissingThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+        $this->assertStringNotContainsString('@throws LogicException', $contents);
+    }
+
+    public function testPsalterMixesFullFilesWithChangedMethodsAndRelocatesErrors(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', <<<'XML'
+            <psalm xmlns="https://getpsalm.org/schema/config" errorLevel="8"
+                checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">
+                <projectFiles><directory name="src" /></projectFiles>
+                <issueHandlers>
+                    <MissingPureAnnotation errorLevel="suppress" />
+                    <MissingImmutableAnnotation errorLevel="suppress" />
+                </issueHandlers>
+            </psalm>
+            XML);
+        $partial = self::$tmpDir . '/src/Partial.php';
+        $full = self::$tmpDir . '/src/Whole file.php';
+        file_put_contents($partial, <<<'PHP'
+            <?php
+            namespace Foo;
+            class Partial {
+                public function changed(): void {
+                    partial_missing();
+                    throw new \RuntimeException();
+                }
+                public function untouched(): void {
+                    legacy_missing();
+                    throw new \DomainException();
+                }
+            }
+            PHP);
+        file_put_contents($full, <<<'PHP'
+            <?php
+            namespace Foo;
+
+            new \MissingFullClass();
+
+            function whole(): void {
+                whole_missing();
+                throw new \LogicException();
+            }
+            PHP);
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'src', 'psalm.xml'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+        file_put_contents($partial, str_replace(
+            'partial_missing();',
+            'partial_missing(); // edited',
+            (string) file_get_contents($partial),
+        ));
+        $before = (string) file_get_contents($partial);
+        $arguments = [
+            PHP_BINARY,
+            $this->psalter,
+            '--changed',
+            '--report-changed',
+            '--full-file=' . $full,
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--threads=2',
+            '--scan-threads=1',
+            '--no-progress',
+            '-m',
+        ];
+        $preview = new Process([...$arguments, '--dry-run', $partial], self::$tmpDir);
+        $preview->run();
+        $this->assertSame(2, $preview->getExitCode(), $preview->getOutput() . $preview->getErrorOutput());
+        $this->assertSame($before, file_get_contents($partial));
+        $this->assertStringNotContainsString('legacy_missing', $preview->getOutput());
+
+        $process = new Process([...$arguments, $partial], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode(), $process->getErrorOutput());
+        $this->assertStringNotContainsString('legacy_missing', $process->getOutput());
+        $this->assertStringContainsString('UndefinedClass - src/Whole file.php:', $process->getOutput());
+        foreach ([$partial => 'partial_missing', $full => 'whole_missing'] as $path => $call) {
+            $source = (string) file_get_contents($path);
+            $position = strpos($source, $call . '()');
+            $this->assertNotFalse($position);
+            $line = substr_count(substr($source, 0, $position), "\n") + 1;
+            $this->assertStringContainsString(
+                ' - src/' . ($path === $partial ? 'Partial.php' : 'Whole file.php') . ':' . $line . ':',
+                $process->getOutput(),
+            );
+        }
+        $contents = (string) file_get_contents($partial);
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+        $this->assertStringNotContainsString('@throws DomainException', $contents);
+        $this->assertStringContainsString('@throws LogicException', (string) file_get_contents($full));
+        $process->run();
+        $this->assertSame(2, $process->getExitCode());
+        $this->assertSame($contents, file_get_contents($partial));
+
+        // Only the legacy error remains. It must neither appear nor cause exit 2.
+        file_put_contents($partial, str_replace('partial_missing();', '', $contents));
+        $filtered = new Process([
+            PHP_BINARY, $this->psalter, '--changed', '--report-changed',
+            '--issues=MissingThrowsDocblock', '--threads=1', '--scan-threads=1', '--no-progress', $partial,
+        ], self::$tmpDir);
+        $filtered->mustRun();
+        $this->assertStringNotContainsString('legacy_missing', $filtered->getOutput());
+    }
+
+    public function testPsalterRejectsReportScopeWithoutChangedMode(): void
+    {
+        $this->runPsalmInit();
+        foreach (['--report-changed', '--full-file=' . self::$tmpDir . '/src/FileWithErrors.php'] as $option) {
+            $process = new Process([
+                PHP_BINARY, $this->psalter, $option, '--issues=MissingThrowsDocblock', '--no-progress',
+            ], self::$tmpDir);
+            $process->run();
+            $this->assertSame(1, $process->getExitCode());
+            $this->assertStringContainsString('require --changed', $process->getErrorOutput());
+        }
+    }
+
+    public function testPsalterTreatsChangedDocblockAsChangedFunction(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                /** Initial description */
+                function changed(): void
+                {
+                    throw new \RuntimeException();
+                }
+                PHP,
+        );
+
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'psalm.xml', 'src/FileWithErrors.php'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        file_put_contents($file_path, str_replace('Initial description', 'Changed description', $contents));
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--changed',
+            '--issues=MissingThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+    }
+
+    public function testPsalterBaseUsesWorkingTreeLineNumbers(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                function changed(): void
+                {
+                }
+                PHP,
+        );
+
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'psalm.xml', 'src/FileWithErrors.php'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+        $base_process = new Process(['git', 'rev-parse', 'HEAD'], self::$tmpDir);
+        $base_process->mustRun();
+        $base_ref = trim($base_process->getOutput());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        file_put_contents($file_path, str_replace("{\n}", "{\n    throw new \\RuntimeException();\n}", $contents));
+        (new Process(['git', 'add', 'src/FileWithErrors.php'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Feature'],
+            self::$tmpDir,
+        ))->mustRun();
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        file_put_contents(
+            $file_path,
+            str_replace('namespace Foo;', "namespace Foo;\n\n// Local work shifts committed line numbers.\n// 01\n// 02\n// 03", $contents),
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--changed',
+            '--base=' . $base_ref,
+            '--issues=MissingThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+    }
+
+    public function testPsalterConvergesForRecursiveMethodsWithStaleThrows(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                final class RecursiveService
+                {
+                    /** @throws RuntimeException */
+                    public function first(): void
+                    {
+                        $this->second();
+                    }
+
+                    public function second(): void
+                    {
+                        $this->first();
+                    }
+                }
+                PHP,
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->setTimeout(10.0);
+        $process->run();
+        $this->assertSame(0, $process->getExitCode());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertStringNotContainsString('@throws', $contents);
+    }
+
+    public function testPsalterPreservesIgnoredThrowsAnnotations(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = (string) file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', $psalmXml);
+        $psalmXml = str_replace(
+            '</psalm>',
+            '<ignoreExceptions><class name="Exception" /><class name="RuntimeException" /></ignoreExceptions></psalm>',
+            $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                /**
+                 * @psalm-pure
+                 * @throws RuntimeException
+                 */
+                function ignoredUnused(): void {}
+
+                /**
+                 * @psalm-pure
+                 * @throws Exception
+                 */
+                function ignoredBroad(): void {
+                    throw new InvalidArgumentException();
+                }
+
+                /**
+                 * @psalm-pure
+                 * @throws LogicException
+                 */
+                function unused(): void {}
+                PHP,
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=UnusedThrowsDocblock,OverlyBroadThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->mustRun();
+
+        $output = (string) file_get_contents($file_path);
+        $this->assertStringContainsString('@throws RuntimeException', $output);
+        $this->assertStringContainsString('@throws Exception', $output);
+        $this->assertStringNotContainsString('@throws InvalidArgumentException', $output);
+        $this->assertStringNotContainsString('@throws LogicException', $output);
+    }
+
+    public function testPsalterDoesNotPropagateInterfaceThrowsWithoutImplementation(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace('<psalm', '<psalm checkForThrowsDocblock="true"', (string) $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file_path = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file_path,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                interface Service
+                {
+                    /** @throws RuntimeException */
+                    public function execute(): void;
+                }
+
+                final class Consumer
+                {
+                    public function __construct(private Service $service)
+                    {
+                    }
+
+                    public function consume(): void
+                    {
+                        $this->service->execute();
+                    }
+                }
+                PHP,
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--no-progress',
+        ], self::$tmpDir);
+        $process->run();
+        $this->assertSame(2, $process->getExitCode(), $process->getOutput() . $process->getErrorOutput());
+
+        $contents = file_get_contents($file_path);
+        $this->assertIsString($contents);
+        $this->assertSame(1, substr_count($contents, '@throws RuntimeException'));
     }
 
     public function testInit(): void
@@ -136,6 +645,1684 @@ final class PsalmEndToEndTest extends TestCase
 
         (new Process([PHP_BINARY, $this->psalter, '--alter', '--issues=InvalidReturnType'], self::$tmpDir))->mustRun();
         $this->assertSame(0, $this->runPsalm([], self::$tmpDir)['CODE']);
+    }
+
+    public function testPsalterReportsUnusedVariablesWhileAltering(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+        file_put_contents(
+            self::$tmpDir . '/src/FileWithErrors.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                function execute(): void
+                {
+                    $unused = 1;
+
+                    throw new RuntimeException();
+                }
+
+                /** @throws \Exception */
+                function broad(): void
+                {
+                    throw new RuntimeException();
+                }
+                PHP,
+        );
+        file_put_contents(
+            self::$tmpDir . '/src/SelectedFile.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                /** @throws \RuntimeException */
+                function selected(): void
+                {
+                }
+                PHP,
+        );
+        file_put_contents(
+            self::$tmpDir . '/src/UnselectedFile.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                function unselected(): void
+                {
+                    undefined_function();
+                }
+                PHP,
+        );
+
+        $result = $this->runPsalm(
+            [
+                '--alter',
+                '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+                '--find-unused-variables',
+                self::$tmpDir . '/src/FileWithErrors.php',
+                self::$tmpDir . '/src/SelectedFile.php',
+            ],
+            self::$tmpDir,
+            true,
+        );
+
+        $this->assertSame(2, $result['CODE']);
+        $this->assertStringContainsString('UnusedVariable', $result['STDOUT']);
+        $this->assertStringNotContainsString('UnselectedFile.php', $result['STDOUT']);
+        $this->assertStringNotContainsString('MissingThrowsDocblock -', $result['STDOUT']);
+        $this->assertStringContainsString(
+            '@throws RuntimeException',
+            (string) file_get_contents(self::$tmpDir . '/src/FileWithErrors.php'),
+        );
+        $this->assertStringNotContainsString(
+            '@throws \Exception',
+            (string) file_get_contents(self::$tmpDir . '/src/FileWithErrors.php'),
+        );
+        $this->assertStringNotContainsString(
+            '@throws',
+            (string) file_get_contents(self::$tmpDir . '/src/SelectedFile.php'),
+        );
+    }
+
+    public function testPsalterKeepsThrowsStableDuringInitializationAnalysis(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+        file_put_contents(
+            self::$tmpDir . '/src/BaseModel.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class BaseModel
+                {
+                    /** @throws RuntimeException */
+                    protected function computeRelatedParams(): void
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+                PHP,
+        );
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        $selectedFileContents = <<<'PHP'
+            <?php
+
+            namespace Foo;
+
+            use RuntimeException;
+
+            class SelectedFile extends BaseModel
+            {
+                private string $value;
+
+                /** @throws RuntimeException */
+                public function __construct()
+                {
+                    $this->value = '';
+                    $this->computeRelatedParams();
+                }
+            }
+            PHP;
+        file_put_contents($selectedFile, $selectedFileContents);
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+    }
+
+    public function testPsalterConvergesAfterNarrowingCalleeThrows(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class SelectedFile
+                {
+                    private int $calls = 0;
+
+                    /**
+                     * @throws \Throwable
+                     * @psalm-external-mutation-free
+                     */
+                    public function notify(): void
+                    {
+                        $this->getPayload();
+                    }
+
+                    /**
+                     * @throws \Throwable
+                     * @psalm-external-mutation-free
+                     */
+                    public function getPayload(): void
+                    {
+                        $this->calls++;
+                        throw new RuntimeException();
+                    }
+                }
+                PHP,
+        );
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $contents = file_get_contents($selectedFile);
+        $this->assertIsString($contents);
+        $this->assertSame(2, substr_count($contents, '@throws RuntimeException'));
+        $this->assertStringNotContainsString('@throws \Throwable', $contents);
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($contents, file_get_contents($selectedFile));
+    }
+
+    public function testPsalterConvergesAfterRemovingCalleeThrows(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class SelectedFile
+                {
+                    private int $calls = 0;
+
+                    /**
+                     * @throws RuntimeException
+                     * @psalm-external-mutation-free
+                     */
+                    public function execute(): void
+                    {
+                        $this->doNothing();
+                    }
+
+                    /**
+                     * @throws RuntimeException
+                     * @psalm-external-mutation-free
+                     */
+                    private function doNothing(): void
+                    {
+                        $this->calls++;
+                    }
+                }
+                PHP,
+        );
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $contents = file_get_contents($selectedFile);
+        $this->assertIsString($contents);
+        $this->assertStringNotContainsString('@throws', $contents);
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($contents, file_get_contents($selectedFile));
+    }
+
+    public function testPsalterUsesConfiguredThrowsImportAlias(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        $psalmXml = str_replace(
+            '</psalm>',
+            <<<'XML'
+                <throwsImportAliases>
+                    <class name="yii\base\Exception" alias="BaseException"/>
+                </throwsImportAliases>
+                </psalm>
+                XML,
+            $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace yii\base {
+                    class Exception extends \Exception {}
+                }
+
+                namespace App {
+                    use DomainException as Exception;
+                    use Yii;
+
+                    /** @psalm-pure */
+                    function execute(): void
+                    {
+                        throw new \yii\base\Exception();
+                    }
+                }
+                PHP,
+        );
+
+        $this->runPsalm(
+            [
+                '--alter',
+                '--php-version=8.3',
+                '--issues=MissingThrowsDocblock',
+                $selectedFile,
+            ],
+            self::$tmpDir,
+        );
+
+        $contents = file_get_contents($selectedFile);
+        $this->assertIsString($contents);
+        $this->assertStringContainsString('use yii\base\Exception as BaseException;', $contents);
+        $this->assertStringContainsString('@throws BaseException', $contents);
+    }
+
+    public function testPsalterKeepsThrowsDocumentedByMultipleCallersOfPrivateMethod(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        $psalmXml = str_replace('findUnusedCode="true"', 'findUnusedCode="false"', $psalmXml);
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        $selectedFileContents = <<<'PHP'
+            <?php
+
+            namespace Foo;
+
+            use Exception;
+            use InvalidArgumentException;
+
+            class SelectedFile
+            {
+                /**
+                 * @throws Exception
+                 * @throws InvalidArgumentException
+                 */
+                public function first(): void
+                {
+                    $this->fail();
+                }
+
+                /**
+                 * @throws Exception
+                 * @throws InvalidArgumentException
+                 */
+                public function second(): void
+                {
+                    $this->fail();
+                }
+
+                /**
+                 * @throws Exception
+                 * @throws InvalidArgumentException
+                 */
+                private function fail(): void
+                {
+                    throw new InvalidArgumentException();
+                }
+            }
+            PHP;
+        file_put_contents($selectedFile, $selectedFileContents);
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+
+        $this->runPsalm($arguments, self::$tmpDir);
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+    }
+
+    public function testPsalterKeepsParentThrowsInheritedByTraitMethod(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        file_put_contents(
+            self::$tmpDir . '/src/BaseModel.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class DatabaseException extends RuntimeException {}
+
+                class BaseModel
+                {
+                    /** @throws DatabaseException */
+                    public function save(): void
+                    {
+                        throw new DatabaseException();
+                    }
+                }
+                PHP,
+        );
+        file_put_contents(
+            self::$tmpDir . '/src/SaveTrait.php',
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class HttpException extends RuntimeException {}
+
+                trait SaveTrait
+                {
+                    /**
+                     * @inheritDoc
+                     * @throws HttpException
+                     */
+                    public function save(): void
+                    {
+                        parent::save();
+                        throw new HttpException();
+                    }
+                }
+                PHP,
+        );
+
+        $selectedFile = self::$tmpDir . '/src/ManagerJob.php';
+        $selectedFileContents = <<<'PHP'
+            <?php
+
+            namespace Foo;
+
+            class ManagerJob extends BaseModel
+            {
+                use SaveTrait;
+
+                /**
+                 * @throws DatabaseException
+                 * @throws HttpException
+                 */
+                public function fail(): void
+                {
+                    $this->save();
+                }
+            }
+            PHP;
+        file_put_contents($selectedFile, $selectedFileContents);
+
+        $this->runPsalm(
+            [
+                '--alter',
+                '--php-version=8.3',
+                '--issues=MissingThrowsDocblock,UnusedThrowsDocblock',
+                $selectedFile,
+            ],
+            self::$tmpDir,
+        );
+
+        $this->assertSame($selectedFileContents, file_get_contents($selectedFile));
+    }
+
+    public function testPsalterPropagatesThrowsToAllCallersInOneRun(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $files = [
+            'A.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class A
+                {
+                    public function execute(B $b): void
+                    {
+                        $b->execute();
+                    }
+                }
+                PHP,
+            'B.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class B
+                {
+                    public function execute(C $c): void
+                    {
+                        $c->execute();
+                    }
+                }
+                PHP,
+            'C.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class C
+                {
+                    public function execute(): void
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+                PHP,
+        ];
+
+        foreach ($files as $filename => $contents) {
+            file_put_contents(self::$tmpDir . '/src/' . $filename, $contents);
+        }
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock',
+            self::$tmpDir . '/src/A.php',
+            self::$tmpDir . '/src/B.php',
+            self::$tmpDir . '/src/C.php',
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+
+        foreach (array_keys($files) as $filename) {
+            $contents = (string) file_get_contents(self::$tmpDir . '/src/' . $filename);
+            $this->assertStringContainsString(
+                '@throws RuntimeException',
+                $contents,
+            );
+        }
+
+        $contentsAfterFirstRun = [];
+        foreach (array_keys($files) as $filename) {
+            $contentsAfterFirstRun[$filename] = file_get_contents(self::$tmpDir . '/src/' . $filename);
+        }
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+
+        foreach ($contentsAfterFirstRun as $filename => $contents) {
+            $this->assertSame($contents, file_get_contents(self::$tmpDir . '/src/' . $filename));
+        }
+    }
+
+    public function testChangedThrowsRootsFollowSameFileHelpersButSkipUnrelatedMethods(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        $file = self::$tmpDir . '/src/Selected.php';
+        $source = <<<'PHP'
+            <?php
+            class Selected {
+                public function entry(): void {
+                    $this->helper();
+                }
+                private function helper(): void {
+                    (new Leaf())->go();
+                }
+                public function unrelated(): void {
+                    (new Noise())->go();
+                }
+            }
+            PHP;
+        file_put_contents($file, $source);
+        file_put_contents(
+            self::$tmpDir . '/src/Leaf.php',
+            '<?php class Leaf { public function go(): void { throw new DomainException(); } }',
+        );
+        file_put_contents(
+            self::$tmpDir . '/src/Noise.php',
+            '<?php class Noise { public function go(): void { throw new UnderflowException(); } }',
+        );
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'src', 'psalm.xml'], self::$tmpDir))->mustRun();
+        (new Process(['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com',
+            'commit', '-qm', 'Initial'], self::$tmpDir))->mustRun();
+        file_put_contents($file, str_replace('$this->helper();', '$this->helper(); // changed', $source));
+        $process = new Process([PHP_BINARY, $this->psalter, '--changed', '--report-changed',
+            '--issues=MissingThrowsDocblock', '--threads=1', '--dry-run', '--debug', $file], self::$tmpDir);
+        $process->setTimeout(30);
+        $process->mustRun();
+        $this->assertStringContainsString('@throws DomainException', $process->getOutput());
+        $this->assertStringNotContainsString('@throws UnderflowException', $process->getOutput());
+        $this->assertStringNotContainsString('Analyzing ' . self::$tmpDir . '/src/Noise.php', $process->getErrorOutput());
+        $this->assertSame(1, substr_count($process->getOutput(), '+     * @throws DomainException'));
+    }
+
+    public function testSharedTraitSummariesSurvivePartialAnalysisWaves(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        $files = [
+            'Shared' => 'trait Shared { public function work(): void { $this->step(); } }',
+            'Left' => 'class Left { use Shared; public function step(): void { (new Bridge())->go(); } }',
+            'Right' => 'class Right { use Shared; public function step(): void { throw new DomainException(); } }',
+            'Bridge' => 'class Bridge { public function go(): void { (new Leaf())->go(); } }',
+            'Leaf' => 'class Leaf { public function go(): void { throw new LogicException(); } }',
+            'Entry' => 'function entry(): void { (new Left())->work(); (new Right())->work(); }',
+        ];
+        foreach ($files as $name => $body) {
+            file_put_contents(self::$tmpDir . '/src/' . $name . '.php', '<?php ' . $body);
+        }
+        foreach ([1, 2] as $threads) {
+            // Each worker count must start cold: a restored summary can hide
+            // a missing cross-file trait target during convergence.
+            file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+                . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false"'
+                . ' cacheDirectory="cache-' . $threads . '">'
+                . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+            $process = new Process([PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock',
+                '--threads=' . $threads, '--scan-threads=1', '--dry-run', '--no-progress',
+                self::$tmpDir . '/src/Entry.php'], self::$tmpDir);
+            $process->setTimeout(30);
+            $process->mustRun();
+            $this->assertStringContainsString('@throws LogicException', $process->getOutput());
+            $this->assertStringContainsString('@throws DomainException', $process->getOutput());
+        }
+    }
+
+    public function testMethodThrowsCacheKeepsSiblingsAcrossRepeatedDependencyEdits(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        foreach (['A' => 'B', 'B' => 'C'] as $caller => $callee) {
+            file_put_contents(self::$tmpDir . '/src/' . $caller . '.php', '<?php class ' . $caller . ' {'
+                . ' public function changed(): void { (new ' . $callee . '())->changed(); }'
+                . ' public function sibling(): void { (new ' . $callee . '())->sibling(); }}');
+        }
+        $leaf = self::$tmpDir . '/src/C.php';
+        $source = '<?php class C {'
+            . ' public function changed(): void { throw new LogicException(); }'
+            . ' public function sibling(): void { throw new UnderflowException(); }}';
+        file_put_contents($leaf, $source);
+        $entry = self::$tmpDir . '/src/Entry.php';
+        file_put_contents($entry, '<?php function entry(): void { (new A())->changed(); (new A())->sibling(); }');
+        $args = [PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock',
+            '--threads=2', '--scan-threads=1', '--debug', '--dry-run', $entry];
+        $run = static function (array $arguments): Process {
+            $process = new Process($arguments, self::$tmpDir);
+            $process->setTimeout(60);
+            $process->mustRun();
+            return $process;
+        };
+        $run($args);
+        $mtime = filemtime($leaf);
+        assert($mtime !== false);
+        foreach (['ErrorException', 'RangeException'] as $exception) {
+            file_put_contents($leaf, str_replace('LogicException', $exception, $source));
+            touch($leaf, $mtime);
+            $updated = $run($args);
+            $this->assertStringContainsString('@throws ' . $exception, $updated->getOutput());
+            $this->assertStringNotContainsString('@throws LogicException', $updated->getOutput());
+            foreach (['a', 'b', 'c'] as $class) {
+                $this->assertStringContainsString(
+                    'Reusing inferred throws method: ' . $class . '::sibling',
+                    $updated->getErrorOutput(),
+                );
+                $this->assertStringNotContainsString(
+                    'Reusing inferred throws method: ' . $class . '::changed',
+                    $updated->getErrorOutput(),
+                );
+            }
+        }
+        // Shift every following declaration, then remove the exception entirely.
+        file_put_contents($leaf, str_replace('throw new LogicException();', "\n // no exception\n", $source));
+        $removed = $run($args);
+        $this->assertStringNotContainsString('@throws RangeException', $removed->getOutput());
+        $this->assertStringContainsString('@throws UnderflowException', $removed->getOutput());
+        foreach (['a', 'b', 'c'] as $class) {
+            $this->assertStringContainsString(
+                'Reusing inferred throws method: ' . $class . '::sibling',
+                $removed->getErrorOutput(),
+            );
+        }
+        $forced = $run([...array_slice($args, 0, -1), '--no-cache', $entry]);
+        $normalize = static fn(string $text): string => (string) preg_replace('/^Checks took .*$/m', '', $text);
+        $this->assertSame($normalize($forced->getOutput()), $normalize($removed->getOutput()));
+        $this->assertStringNotContainsString('Reusing inferred throws:', $forced->getErrorOutput());
+        $caches = glob(self::$tmpDir . '/cache/*/inferred-throws-v1.json');
+        assert($caches !== false);
+        $this->assertCount(1, $caches);
+        $cache = $caches[0];
+        /** @var array{entries: array<string, array<string, mixed>>} $state */
+        $state = json_decode((string) file_get_contents($cache), true);
+        // A missing method graph must not be interpreted as "no dependencies".
+        unset($state['entries'][self::$tmpDir . '/src/B.php']['method_dependencies']);
+        file_put_contents($cache, json_encode($state, JSON_THROW_ON_ERROR));
+        $uncertain = $run($args);
+        $this->assertSame($normalize($forced->getOutput()), $normalize($uncertain->getOutput()));
+        $this->assertStringNotContainsString('Reusing inferred throws method: b::sibling', $uncertain->getErrorOutput());
+        $this->assertStringNotContainsString('Reusing inferred throws method: a::sibling', $uncertain->getErrorOutput());
+        $this->assertStringContainsString('Reusing inferred throws method: c::sibling', $uncertain->getErrorOutput());
+        /** @var array{entries: array<string, array<string, mixed>>} $state */
+        $state = json_decode((string) file_get_contents($cache), true);
+        unset($state['entries'][self::$tmpDir . '/src/B.php']);
+        file_put_contents($cache, json_encode($state, JSON_THROW_ON_ERROR));
+        $missing = $run($args);
+        $this->assertSame($normalize($forced->getOutput()), $normalize($missing->getOutput()));
+        $this->assertStringNotContainsString('Reusing inferred throws method: a::sibling', $missing->getErrorOutput());
+        file_put_contents($cache, '{broken');
+        $broken = $run($args);
+        $this->assertSame($normalize($forced->getOutput()), $normalize($broken->getOutput()));
+        $this->assertStringNotContainsString('Reusing inferred throws:', $broken->getErrorOutput());
+    }
+
+    public function testThrowsConvergenceKeepsIndependentEditsAndDiagnostics(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="1" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        file_put_contents(self::$tmpDir . '/src/B.php', '<?php class B {'
+            . ' public static function run(): void { C::run(); } }');
+        $roots = [];
+        for ($i = 0; $i < 3; ++$i) {
+            $roots[] = self::$tmpDir . '/src/Root' . $i . '.php';
+        }
+        $run = static function (array $arguments): Process {
+            $process = new Process($arguments, self::$tmpDir);
+            $process->setTimeout(60);
+            $process->run();
+            return $process;
+        };
+        foreach ([1, 2] as $threads) {
+            foreach ([
+                ['throw new LogicException();', null, false],
+                ['if (rand(0, 1)) { throw new LogicException(); } throw new RuntimeException();',
+                    'RuntimeException', true],
+                ['', null, false],
+                ['throw new ErrorException();', 'ErrorException', true],
+            ] as [$body, $expected, $invalid]) {
+                file_put_contents(self::$tmpDir . '/src/C.php', '<?php class C {'
+                    . ' public static function run(): void { ' . $body . ' } }');
+                foreach ($roots as $i => $root) {
+                    file_put_contents($root, '<?php class Root' . $i . " {\n"
+                        . ' public function run(): void { try { B::run(); } catch (LogicException $e) {}'
+                        . ($invalid ? ' $this->accept(new stdClass());' : '') . " }\n"
+                        . " public function sibling(): void { throw new UnderflowException(); }\n"
+                        . " public function accept(DateTime \$date, ?ErrorException \$known = null): void {\n"
+                        . " echo \$date->format('c'); if (\$known) { echo \$known->getMessage(); } }\n}");
+                }
+                $args = [PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock', '--dry-run',
+                    '--no-progress', '--threads=' . $threads, '--scan-threads=1'];
+                $cached = $run([...$args, ...$roots]);
+                $this->assertSame(0, $cached->getExitCode(), $cached->getErrorOutput());
+                $normalize = static fn(string $text): string => (string) preg_replace('/^Checks took .*$/m', '', $text);
+                $clean = $run([...$args, '--no-cache', ...$roots]);
+                $this->assertSame(0, $clean->getExitCode(), $clean->getErrorOutput());
+                $this->assertSame($normalize($clean->getOutput()), $normalize($cached->getOutput()));
+                $this->assertSame(3, substr_count($cached->getOutput(), '@throws UnderflowException'));
+                $this->assertStringNotContainsString('@throws LogicException', $cached->getOutput());
+                if ($expected !== null) {
+                    $this->assertSame(3, substr_count($cached->getOutput(), '@throws ' . $expected));
+                } else {
+                    $this->assertSame(3, substr_count($cached->getOutput(), '@throws'));
+                }
+                $this->assertStringNotContainsString('src/B.php:', $cached->getOutput());
+                $this->assertStringNotContainsString('src/C.php:', $cached->getOutput());
+                $diagnostic_args = [PHP_BINARY, $this->psalm, '--output-format=json', '--no-progress',
+                    '--threads=' . $threads, '--scan-threads=1'];
+                $diagnostics = $run([...$diagnostic_args, ...$roots]);
+                $clean_diagnostics = $run([...$diagnostic_args, '--no-cache', ...$roots]);
+                $this->assertSame($clean_diagnostics->getOutput(), $diagnostics->getOutput());
+                /** @var list<array{type: string, file_path: string}> $issues */
+                $issues = json_decode($diagnostics->getOutput(), true);
+                $invalid_count = 0;
+                foreach ($issues as $issue) {
+                    if ($issue['type'] === 'InvalidArgument') {
+                        ++$invalid_count;
+                    }
+                    $this->assertStringContainsString('/src/Root', $issue['file_path']);
+                }
+                $this->assertSame($invalid ? 3 : 0, $invalid_count);
+            }
+        }
+    }
+
+    public function testPersistentInferredThrowsWithoutDocblocks(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', '<psalm xmlns="https://getpsalm.org/schema/config"'
+            . ' errorLevel="8" phpVersion="8.2" checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">'
+            . '<projectFiles><directory name="src" /></projectFiles></psalm>');
+        $caller = self::$tmpDir . '/src/A.php';
+        $bridge = self::$tmpDir . '/src/B.php';
+        $leaf = self::$tmpDir . '/src/C.php';
+        $other = self::$tmpDir . '/src/D.php';
+        file_put_contents($caller, '<?php class A { public function run(B $b, D $d): void { $b->run(); $d->run(); } }');
+        file_put_contents($bridge, '<?php class B { public function run(): void { (new C())->run(); } }');
+        file_put_contents($leaf, '<?php class C { public function run(): void { throw new \LogicException(); } }');
+        file_put_contents($other, '<?php class D { public function run(): void { throw new \UnderflowException(); } }');
+        $args = [PHP_BINARY, $this->psalter, '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--threads=1', '--scan-threads=1', '--debug', '--dry-run', $caller];
+        $run = static function (array $arguments): Process {
+            $process = new Process($arguments, self::$tmpDir);
+            $process->setTimeout(60);
+            $process->mustRun();
+            return $process;
+        };
+        $cold = $run($args);
+        $this->assertStringContainsString('@throws LogicException', $cold->getOutput());
+        $warm = $run($args);
+        foreach ([$bridge, $leaf, $other] as $file) {
+            $this->assertStringContainsString('Reusing inferred throws: ' . $file, $warm->getErrorOutput());
+        }
+        $normalize = static fn(string $text): string => (string) preg_replace('/^Checks took .*$/m', '', $text);
+        $this->assertSame($normalize($cold->getOutput()), $normalize($warm->getOutput()));
+        $mtime = filemtime($leaf);
+        assert($mtime !== false);
+        file_put_contents($leaf, str_replace('LogicException', 'ErrorException', (string) file_get_contents($leaf)));
+        touch($leaf, $mtime);
+        $updated = $run($args);
+        $this->assertStringContainsString('@throws ErrorException', $updated->getOutput());
+        $this->assertStringNotContainsString('@throws LogicException', $updated->getOutput());
+        foreach ([$bridge, $leaf] as $file) {
+            $this->assertStringNotContainsString('Reusing inferred throws: ' . $file, $updated->getErrorOutput());
+        }
+        $this->assertStringContainsString('Reusing inferred throws: ' . $other, $updated->getErrorOutput());
+        $forced = $run([...array_slice($args, 0, -1), '--no-cache', $caller]);
+        $this->assertStringNotContainsString('Reusing inferred throws:', $forced->getErrorOutput());
+        $this->assertSame($normalize($updated->getOutput()), $normalize($forced->getOutput()));
+        $this->assertStringNotContainsString('@throws', (string) file_get_contents($leaf));
+        file_put_contents($leaf, '<?php class C { public function run(): void {} }');
+        $removed = $run($args);
+        $this->assertStringNotContainsString('@throws ErrorException', $removed->getOutput());
+        $this->assertStringContainsString('@throws UnderflowException', $removed->getOutput());
+        // A declaration change invalidates even the otherwise unrelated D summary.
+        file_put_contents($leaf, '<?php class C { public function run(int $unused = 0): void {} }');
+        $signature = $run($args);
+        $this->assertStringNotContainsString('Reusing inferred throws:', $signature->getErrorOutput());
+        file_put_contents(self::$tmpDir . '/psalm.xml', str_replace(
+            'errorLevel="8"',
+            'errorLevel="7"',
+            (string) file_get_contents(self::$tmpDir . '/psalm.xml'),
+        ));
+        $configuration = $run($args);
+        $this->assertStringNotContainsString('Reusing inferred throws:', $configuration->getErrorOutput());
+    }
+
+    public function testPsalterFollowsUnselectedThrowsDependenciesWithWarmCache(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', <<<'XML'
+            <psalm xmlns="https://getpsalm.org/schema/config" errorLevel="8"
+                checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">
+                <projectFiles><directory name="src" /></projectFiles>
+                <issueHandlers>
+                    <MissingPureAnnotation errorLevel="suppress" />
+                    <MissingImmutableAnnotation errorLevel="suppress" />
+                </issueHandlers>
+            </psalm>
+            XML);
+        $caller = self::$tmpDir . '/src/Caller.php';
+        $bridge = self::$tmpDir . '/src/Bridge.php';
+        $leaf = self::$tmpDir . '/src/Leaf.php';
+        file_put_contents($caller, <<<'PHP'
+            <?php
+            namespace Foo;
+            class Caller {
+                public function run(Bridge $bridge): void {
+                    $bridge->run();
+                }
+                public function unchanged(): void {
+                    throw new \UnderflowException();
+                }
+            }
+            PHP);
+        $bridgeCode = <<<'PHP'
+            <?php
+            namespace Foo;
+            require_once __DIR__ . '/Leaf.php';
+            class Bridge {
+                public function run(): void { leaf(); }
+            }
+            PHP;
+        file_put_contents($bridge, $bridgeCode);
+        file_put_contents($leaf, '<?php namespace Foo; function leaf(): void {}');
+        (new Process(['git', 'init', '-q'], self::$tmpDir))->mustRun();
+        (new Process(['git', 'add', 'src', 'psalm.xml'], self::$tmpDir))->mustRun();
+        (new Process(
+            ['git', '-c', 'user.name=Psalm', '-c', 'user.email=psalm@example.com', 'commit', '-qm', 'Initial'],
+            self::$tmpDir,
+        ))->mustRun();
+
+        foreach ([1, 2] as $threads) {
+            // The two exception names have equal length. Preserve mtime as well,
+            // so only a content-aware cache can notice the replacement.
+            foreach (['LogicException', 'ErrorException', null] as $exception) {
+                $body = $exception === null ? '' : 'throw new \\' . $exception . '();';
+                $leafCode = '<?php namespace Foo; function leaf(): void { ' . $body . ' }';
+                file_put_contents($leaf, $leafCode);
+                touch($leaf, 1_700_000_000);
+                $contents = (string) file_get_contents($caller);
+                file_put_contents($caller, str_replace('$bridge->run();', '$bridge->run(); // edited', $contents));
+                touch($caller, 1_700_000_000);
+
+                $process = new Process([
+                    PHP_BINARY,
+                    $this->psalter,
+                    '--changed',
+                    '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+                    '--threads=' . $threads,
+                    '--scan-threads=1',
+                    '--no-progress',
+                    $caller,
+                ], self::$tmpDir);
+                $process->mustRun();
+                $contents = (string) file_get_contents($caller);
+                if ($exception !== null) {
+                    $this->assertStringContainsString('@throws ' . $exception, $contents);
+                }
+                foreach (['LogicException', 'ErrorException', 'UnderflowException'] as $absent) {
+                    if ($absent !== $exception) {
+                        $this->assertStringNotContainsString('@throws ' . $absent, $contents);
+                    }
+                }
+                $this->assertSame($bridgeCode, file_get_contents($bridge));
+                $this->assertSame($leafCode, file_get_contents($leaf));
+                $process->mustRun();
+                $this->assertSame($contents, file_get_contents($caller));
+            }
+        }
+    }
+
+    public function testPsalterFollowsUnselectedTraitAndRecursiveFunctionThrows(): void
+    {
+        unlink(self::$tmpDir . '/src/FileWithErrors.php');
+        file_put_contents(self::$tmpDir . '/psalm.xml', <<<'XML'
+            <psalm xmlns="https://getpsalm.org/schema/config" errorLevel="8"
+                checkForThrowsDocblock="true" findUnusedCode="false" cacheDirectory="cache">
+                <projectFiles><directory name="src" /></projectFiles>
+                <issueHandlers>
+                    <MissingPureAnnotation errorLevel="suppress" />
+                    <MissingImmutableAnnotation errorLevel="suppress" />
+                </issueHandlers>
+            </psalm>
+            XML);
+        $files = [
+            'Caller.php' => <<<'PHP'
+                <?php
+                namespace Foo;
+                class Caller {
+                    /** @throws \Throwable */
+                    public function run(Service $service, int $depth): void {
+                        $service->run($depth);
+                    }
+                }
+                PHP,
+            'Service.php' => <<<'PHP'
+                <?php
+                namespace Foo;
+                class Service {
+                    use Work;
+                    public function helper(): void { throw new \LogicException(); }
+                }
+                PHP,
+            'Work.php' => <<<'PHP'
+                <?php
+                namespace Foo;
+                require_once __DIR__ . '/Functions.php';
+                trait Work {
+                    public function run(int $depth): void {
+                        if ($depth > 0) { recurse($depth); }
+                        $this->helper();
+                    }
+                }
+                PHP,
+            'Functions.php' => <<<'PHP'
+                <?php
+                namespace Foo;
+                function recurse(int $depth): void {
+                    if ($depth > 1) { recurse($depth - 1); }
+                    throw new \RuntimeException();
+                }
+                PHP,
+        ];
+        foreach ($files as $name => $contents) {
+            file_put_contents(self::$tmpDir . '/src/' . $name, $contents);
+        }
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=MissingThrowsDocblock',
+            '--threads=2',
+            '--scan-threads=2',
+            '--no-progress',
+            self::$tmpDir . '/src/Caller.php',
+        ], self::$tmpDir);
+        $process->mustRun();
+        $contents = (string) file_get_contents(self::$tmpDir . '/src/Caller.php');
+        $this->assertStringContainsString('@throws RuntimeException', $contents);
+        $this->assertStringContainsString('@throws LogicException', $contents);
+        $this->assertStringContainsString('@throws \Throwable', $contents);
+        foreach ($files as $name => $original) {
+            if ($name !== 'Caller.php') {
+                $this->assertSame($original, file_get_contents(self::$tmpDir . '/src/' . $name));
+            }
+        }
+        $process->mustRun();
+        $this->assertSame($contents, file_get_contents(self::$tmpDir . '/src/Caller.php'));
+    }
+
+    public function testPsalterReplacesDocumentedThrowableWithConcreteThrow(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/Task.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use Exception;
+                use Throwable;
+
+                class ServerException extends Exception {}
+
+                final class Service
+                {
+                    /** @throws Throwable */
+                    public function execute(): void
+                    {
+                        throw new ServerException();
+                    }
+                }
+
+                final class Task
+                {
+                    /** @throws Throwable */
+                    public function estimate(Service $service): void
+                    {
+                        $service->execute();
+                    }
+                }
+                PHP,
+        );
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+
+        $contents = (string) file_get_contents($selectedFile);
+        $this->assertSame(2, substr_count($contents, '@throws ServerException'));
+        $this->assertStringNotContainsString('@throws Throwable', $contents);
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+        $this->assertSame($contents, file_get_contents($selectedFile));
+    }
+
+    public function testPsalterPropagatesThrowsThroughDecoratorAndMagicPropertyChains(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/Scenario.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use Exception;
+                use Throwable;
+
+                class HttpException extends Exception {}
+                class ServerException extends HttpException {}
+                class NotFoundException extends ServerException {}
+
+                class LoggerException extends Exception {}
+
+                final class Logger
+                {
+                    public static function report(Throwable $throwable): void
+                    {
+                        if ($throwable->getMessage() === '') {
+                            throw new LoggerException();
+                        }
+                    }
+                }
+
+                final class TaskGateway
+                {
+                    /** @throws HttpException */
+                    public function dispatch(bool $notFound): void
+                    {
+                        if ($notFound) {
+                            throw new NotFoundException();
+                        }
+
+                        throw new ServerException();
+                    }
+                }
+
+                /** @property-read TaskGateway $gateway */
+                class MagicContainer
+                {
+                    public function __get(string $name): object
+                    {
+                        return new TaskGateway();
+                    }
+                }
+
+                /** @mixin MagicContainer */
+                final class AlternateContainer
+                {
+                    public function __get(string $name): object
+                    {
+                        return new TaskGateway();
+                    }
+                }
+
+                class BaseFacade
+                {
+                    /** @var MagicContainer|AlternateContainer */
+                    public static $container;
+                }
+
+                final class Facade extends BaseFacade
+                {
+                }
+
+                abstract class ModelDecorator
+                {
+                    /** @return static */
+                    public static function decorate(object $model): self
+                    {
+                        return new static();
+                    }
+                }
+
+                /** @method static static decorate(Entity $model) */
+                abstract class EntityDecorator extends ModelDecorator
+                {
+                }
+
+                final class EntityNotifier extends EntityDecorator
+                {
+                    public function notify(): void
+                    {
+                        try {
+                            Facade::$container->gateway->dispatch(false);
+                        } catch (Throwable $throwable) {
+                            Logger::report($throwable);
+                            throw $throwable;
+                        }
+                    }
+                }
+
+                class BaseEntity
+                {
+                    public function afterSave(): void
+                    {
+                    }
+                }
+
+                final class Entity extends BaseEntity
+                {
+                    /**
+                     * @inheritDoc
+                     * @throws HttpException
+                     * @throws ServerException
+                     * @throws Throwable
+                     */
+                    public function afterSave(): void
+                    {
+                        EntityNotifier::decorate($this)->notify();
+                    }
+
+                    /**
+                     * @throws HttpException
+                     * @throws ServerException
+                     * @throws Throwable
+                     */
+                    public function unchained(): void
+                    {
+                        $notifier = EntityNotifier::decorate($this);
+                        $notifier->notify();
+                    }
+                }
+                PHP,
+        );
+
+        $this->runPsalm(
+            [
+                '--alter',
+                '--php-version=8.3',
+                '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+                $selectedFile,
+            ],
+            self::$tmpDir,
+            true,
+        );
+
+        $contents = (string) file_get_contents($selectedFile);
+        $this->assertSame(4, substr_count($contents, '@throws ServerException'), $contents);
+        $this->assertStringNotContainsString('@throws HttpException', $contents);
+        $this->assertSame(1, substr_count($contents, '@throws NotFoundException'), $contents);
+        $this->assertSame(4, substr_count($contents, '@throws LoggerException'), $contents);
+        $this->assertStringNotContainsString('@throws Throwable', $contents);
+    }
+
+    public function testPsalmPropagatesInferredThrowsToAllSelectedCallers(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $files = [
+            'A.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                class A
+                {
+                    public function execute(B $b): void
+                    {
+                        $b->execute();
+                    }
+                }
+                PHP,
+            'B.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                class B
+                {
+                    public function execute(C $c): void
+                    {
+                        $c->execute();
+                    }
+                }
+                PHP,
+            'C.php' => <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use RuntimeException;
+
+                class C
+                {
+                    public function execute(): void
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+                PHP,
+        ];
+
+        foreach ($files as $filename => $contents) {
+            file_put_contents(self::$tmpDir . '/src/' . $filename, $contents);
+        }
+
+        $result = $this->runPsalm(
+            [
+                '--php-version=8.3',
+                '--show-info=false',
+                self::$tmpDir . '/src/A.php',
+                self::$tmpDir . '/src/B.php',
+                self::$tmpDir . '/src/C.php',
+            ],
+            self::$tmpDir,
+            true,
+        );
+
+        $this->assertSame(2, $result['CODE']);
+        $this->assertSame(3, substr_count($result['STDOUT'], 'RuntimeException is thrown but not caught'));
+    }
+
+    public function testPsalterNarrowsThrowsForLiteralBooleanArgumentsAndWarmCache(): void
+    {
+        $this->runPsalmInit();
+
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $selectedFile = self::$tmpDir . '/src/SelectedFile.php';
+        file_put_contents(
+            $selectedFile,
+            <<<'PHP'
+                <?php
+
+                namespace Foo;
+
+                use Exception;
+                use Throwable;
+
+                class TrueException extends Exception {}
+                class FalseException extends Exception {}
+                class ModeException extends Exception {}
+                class NullException extends Exception {}
+                class EnumException extends Exception {}
+
+                enum Mode
+                {
+                    case STRICT;
+                    case RELAXED;
+                }
+
+                class SelectedFile
+                {
+                    private const MODE_STRICT = 'strict';
+                    private const MODE_RELAXED = 'relaxed';
+
+                    /** @throws Throwable */
+                    public function branch(bool $flag): void
+                    {
+                        if ($flag) {
+                            throw new TrueException();
+                        }
+                        throw new FalseException();
+                    }
+
+                    /** @throws Throwable */
+                    public function forward(bool $flag): void
+                    {
+                        $this->branch($flag);
+                    }
+
+                    /** @throws Throwable */
+                    public function trueOnly(): void
+                    {
+                        $this->branch(true);
+                    }
+
+                    /** @throws Throwable */
+                    public function falseOnly(): void
+                    {
+                        $this->branch(false);
+                    }
+
+                    /** @throws Throwable */
+                    public function forwardedTrueOnly(): void
+                    {
+                        $this->forward(true);
+                    }
+
+                    /** @throws Throwable */
+                    public function unknown(bool $flag): void
+                    {
+                        $this->forward($flag);
+                    }
+
+                    /** @throws Throwable */
+                    public function negated(bool $flag): void
+                    {
+                        if (!$flag) {
+                            throw new FalseException();
+                        }
+                        throw new TrueException();
+                    }
+
+                    /** @throws Throwable */
+                    public function negatedTrueOnly(): void
+                    {
+                        $this->negated(true);
+                    }
+
+                    /** @throws Throwable */
+                    public function identical(bool $flag): void
+                    {
+                        if ($flag === true) {
+                            throw new TrueException();
+                        } else {
+                            throw new FalseException();
+                        }
+                    }
+
+                    /** @throws Throwable */
+                    public function identicalFalseOnly(): void
+                    {
+                        $this->identical(false);
+                    }
+
+                    /** @throws Throwable */
+                    public function localFalseOnly(): void
+                    {
+                        $flag = false;
+                        $this->branch($flag);
+                    }
+
+                    /** @throws Throwable */
+                    public function invertedForward(bool $flag): void
+                    {
+                        $this->branch(!$flag);
+                    }
+
+                    /** @throws Throwable */
+                    public function invertedForwardTrueOnly(): void
+                    {
+                        $this->invertedForward(true);
+                    }
+
+                    /** @throws Throwable */
+                    public function comparisonForward(bool $flag): void
+                    {
+                        $this->branch($flag === false);
+                    }
+
+                    /** @throws Throwable */
+                    public function comparisonForwardTrueOnly(): void
+                    {
+                        $this->comparisonForward(true);
+                    }
+
+                    /** @throws Throwable */
+                    public function scalarBranch(string $mode): void
+                    {
+                        if ($mode === 'strict') {
+                            throw new ModeException();
+                        }
+                    }
+
+                    /** @throws Throwable */
+                    public function strictModeOnly(): void
+                    {
+                        $this->scalarBranch('strict');
+                    }
+
+                    /** @throws Throwable */
+                    public function relaxedModeOnly(): void
+                    {
+                        $this->scalarBranch('relaxed');
+                    }
+
+                    /** @throws Throwable */
+                    public function constantStrictModeOnly(): void
+                    {
+                        $this->scalarBranch(self::MODE_STRICT);
+                    }
+
+                    /** @throws Throwable */
+                    public function constantRelaxedModeOnly(): void
+                    {
+                        $this->scalarBranch(self::MODE_RELAXED);
+                    }
+
+                    /** @throws Throwable */
+                    public function nullableBranch(?bool $flag): void
+                    {
+                        if ($flag === null) {
+                            throw new NullException();
+                        }
+                    }
+
+                    /** @throws Throwable */
+                    public function nullOnly(): void
+                    {
+                        $this->nullableBranch(null);
+                    }
+
+                    /** @throws Throwable */
+                    public function nullableFalseOnly(): void
+                    {
+                        $this->nullableBranch(false);
+                    }
+
+                    /** @throws Throwable */
+                    public function enumBranch(Mode $mode): void
+                    {
+                        if ($mode === Mode::STRICT) {
+                            throw new EnumException();
+                        }
+                    }
+
+                    /** @throws Throwable */
+                    public function enumStrictOnly(): void
+                    {
+                        $this->enumBranch(Mode::STRICT);
+                    }
+
+                    /** @throws Throwable */
+                    public function enumRelaxedOnly(): void
+                    {
+                        $this->enumBranch(Mode::RELAXED);
+                    }
+
+                    /** @throws Throwable */
+                    public function rethrow(bool $flag): void
+                    {
+                        try {
+                            $this->branch($flag);
+                        } catch (Throwable $throwable) {
+                            throw $throwable;
+                        }
+                    }
+
+                    /** @throws Throwable */
+                    public function rethrowFalseOnly(): void
+                    {
+                        $this->rethrow(false);
+                    }
+
+                    /** @throws Throwable */
+                    public function aliasRethrow(bool $flag): void
+                    {
+                        try {
+                            $this->branch($flag);
+                        } catch (Throwable $throwable) {
+                            $copy = $throwable;
+                            throw $copy;
+                        }
+                    }
+
+                    /** @throws Throwable */
+                    public function aliasRethrowFalseOnly(): void
+                    {
+                        $this->aliasRethrow(false);
+                    }
+
+                    /** @throws Throwable */
+                    public function defaulted(bool $flag = false): void
+                    {
+                        $this->branch($flag);
+                    }
+
+                    /** @throws Throwable */
+                    public function defaultOnly(): void
+                    {
+                        $this->defaulted();
+                    }
+
+                    /** @throws Throwable */
+                    public function conditionalRethrow(bool $raise = true): void
+                    {
+                        try {
+                            throw new TrueException();
+                        } catch (Throwable $throwable) {
+                            if ($raise) {
+                                throw $throwable;
+                            }
+                        }
+                    }
+
+                    /** @throws Throwable */
+                    public function suppressedRethrow(): void
+                    {
+                        $this->conditionalRethrow(false);
+                    }
+
+                    /** @throws Throwable */
+                    public function defaultRethrow(): void
+                    {
+                        $this->conditionalRethrow();
+                    }
+                }
+                PHP,
+        );
+
+        $arguments = [
+            '--alter',
+            '--php-version=8.3',
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            $selectedFile,
+        ];
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+        $contents = (string) file_get_contents($selectedFile);
+        $this->assertSame(15, substr_count($contents, '@throws TrueException'), $contents);
+        $this->assertSame(18, substr_count($contents, '@throws FalseException'), $contents);
+        $this->assertSame(3, substr_count($contents, '@throws ModeException'), $contents);
+        $this->assertSame(2, substr_count($contents, '@throws NullException'), $contents);
+        $this->assertSame(2, substr_count($contents, '@throws EnumException'), $contents);
+        $this->assertStringNotContainsString('@throws Throwable', $contents);
+
+        $this->runPsalm($arguments, self::$tmpDir, true);
+        $this->assertSame($contents, file_get_contents($selectedFile));
+
+        // The first cache snapshot predates Psalter's edit. The second run
+        // refreshes it, and this third run consumes the warm conditional data.
+        $warm = $this->runPsalm(
+            [...array_slice($arguments, 0, -1), '--debug', $selectedFile],
+            self::$tmpDir,
+            true,
+        );
+        $this->assertSame($contents, file_get_contents($selectedFile));
+        $this->assertStringContainsString('Reusing inferred throws: ' . $selectedFile, $warm['STDERR']);
     }
 
     public function testPsalm(): void

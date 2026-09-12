@@ -23,6 +23,7 @@ use Psalm\Internal\Type\TemplateResult;
 use Psalm\Internal\Type\TypeExpander;
 use Psalm\Internal\Type\TypeVariableTracker;
 use Psalm\Plugin\EventHandler\Event\AddRemoveTaintsEvent;
+use Psalm\Storage\ClassLikeStorage;
 use Psalm\Type;
 use Psalm\Type\Atomic;
 use Psalm\Type\Atomic\TClosure;
@@ -257,6 +258,17 @@ final class MethodCallReturnTypeFetcher
             $return_type_candidate = $method_name === '__tostring' ? Type::getString() : Type::getMixed();
         }
 
+        $container_entry_type = self::getLiteralContainerEntryType(
+            $codebase,
+            $class_storage,
+            $method_name,
+            $args,
+            $return_type_candidate,
+        );
+        if ($container_entry_type !== null) {
+            $return_type_candidate = $container_entry_type;
+        }
+
         $return_type_candidate = TypeVariableTracker::resolveTypeVariables($return_type_candidate, $codebase);
 
         self::taintMethodCallResult(
@@ -272,6 +284,46 @@ final class MethodCallReturnTypeFetcher
         );
 
         return $return_type_candidate;
+    }
+
+    /**
+     * Resolve the common container idiom `$container->get('service')` from the
+     * same pseudo-property metadata used for `$container->service`.
+     *
+     * A precise declared return type always wins. This fallback is deliberately
+     * limited to literal keys and mixed/object returns, so an unrelated get()
+     * method cannot silently replace a useful contract.
+     *
+     * @param list<PhpParser\Node\Arg> $args
+     */
+    private static function getLiteralContainerEntryType(
+        Codebase $codebase,
+        ClassLikeStorage $class_storage,
+        string $method_name,
+        array $args,
+        Union $declared_return_type,
+    ): ?Union {
+        if ($method_name !== 'get'
+            || !isset($args[0])
+            || !$args[0]->value instanceof PhpParser\Node\Scalar\String_
+            || (!$declared_return_type->isMixed()
+                && !($declared_return_type->isSingle() && $declared_return_type->hasObject()))
+        ) {
+            return null;
+        }
+
+        $pseudo_property_type = $class_storage->pseudo_property_get_types['$' . $args[0]->value->value] ?? null;
+        if ($pseudo_property_type === null) {
+            return null;
+        }
+
+        return TypeExpander::expandUnion(
+            $codebase,
+            $pseudo_property_type,
+            $class_storage->name,
+            $class_storage->name,
+            $class_storage->parent_class,
+        );
     }
 
     /**

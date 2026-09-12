@@ -122,6 +122,21 @@ abstract class FunctionLikeStorage implements HasAttributesInterface, Stringable
     public array $throws = [];
 
     /**
+     * Exceptions inferred from the function body during the current analysis.
+     *
+     * @var array<string, true>|null
+     */
+    public ?array $inferred_throws = null;
+
+    /**
+     * Boolean argument constraints under which an inferred exception can escape.
+     * An empty constraint means the exception is unconditional.
+     *
+     * @var array<string, list<array<int, bool|int|string|null>>>|null
+     */
+    public ?array $inferred_throws_conditions = null;
+
+    /**
      * @var array<string, CodeLocation>
      */
     public array $throw_locations = [];

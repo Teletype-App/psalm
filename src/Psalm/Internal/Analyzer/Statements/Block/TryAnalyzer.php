@@ -7,12 +7,15 @@ namespace Psalm\Internal\Analyzer\Statements\Block;
 use PhpParser;
 use Psalm\CodeLocation;
 use Psalm\Context;
+use Psalm\Internal\Analyzer\CatchRethrowCollector;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
 use Psalm\Internal\Analyzer\ClassLikeNameOptions;
 use Psalm\Internal\Analyzer\ScopeAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
+use Psalm\Internal\Analyzer\ThrownExceptionOrigin;
 use Psalm\Internal\DataFlow\DataFlowNode;
 use Psalm\Internal\Scope\FinallyScope;
+use Psalm\Internal\Type\Comparator\UnionTypeComparator;
 use Psalm\Issue\InvalidCatch;
 use Psalm\IssueBuffer;
 use Psalm\Type;
@@ -21,10 +24,13 @@ use Psalm\Type\Union;
 use UnexpectedValueException;
 
 use function array_intersect_key;
+use function array_key_exists;
 use function array_map;
 use function array_merge;
+use function count;
 use function in_array;
 use function is_string;
+use function ksort;
 use function strtolower;
 
 /**
@@ -32,6 +38,7 @@ use function strtolower;
  */
 final class TryAnalyzer
 {
+    private const MAX_THROWS_CONDITIONS = 64;
     /**
      * @return  false|null
      */
@@ -56,11 +63,15 @@ final class TryAnalyzer
         }
 
         $existing_thrown_exceptions = $context->possibly_thrown_exceptions;
+        $existing_thrown_exception_origins = $context->possibly_thrown_exception_origins;
+        $existing_thrown_exception_conditions = $context->possibly_thrown_exception_conditions;
 
         /**
          * @var array<string, array<array-key, CodeLocation>> $context->possibly_thrown_exceptions
          */
         $context->possibly_thrown_exceptions = [];
+        $context->possibly_thrown_exception_origins = [];
+        $context->possibly_thrown_exception_conditions = [];
 
         $old_context = clone $context;
 
@@ -125,6 +136,8 @@ final class TryAnalyzer
 
         $try_context->vars_possibly_in_scope = $context->vars_possibly_in_scope;
         $try_context->possibly_thrown_exceptions = $context->possibly_thrown_exceptions;
+        $try_context->possibly_thrown_exception_origins = $context->possibly_thrown_exception_origins;
+        $try_context->possibly_thrown_exception_conditions = $context->possibly_thrown_exception_conditions;
 
         $try_leaves_loop = $context->loop_scope
             && $context->loop_scope->final_actions
@@ -158,6 +171,8 @@ final class TryAnalyzer
         foreach ($stmt->catches as $i => $catch) {
             $catch_context = clone $original_context;
             $catch_context->has_returned = false;
+            $caught_exceptions = [];
+            $caught_exception_conditions = [];
 
             foreach ($catch_context->vars_in_scope as $var_id => $type) {
                 if (!isset($old_context->vars_in_scope[$var_id])) {
@@ -242,14 +257,41 @@ final class TryAnalyzer
                             || ($codebase->interfaceExists($exception_fqcln, null, $context)
                                 && $codebase->interfaceExtends($exception_fqcln, $fq_catch_class))
                         ) {
+                            $caught_exceptions[$exception_fqcln] = self::getExceptionOrigins(
+                                $catch_context,
+                                $exception_fqcln,
+                            );
+                            $exception_conditions =
+                                $catch_context->possibly_thrown_exception_conditions[$exception_fqcln] ?? [];
+                            foreach ($exception_conditions as $conditions) {
+                                foreach ($conditions as $condition) {
+                                    if (!in_array(
+                                        $condition,
+                                        $caught_exception_conditions[$exception_fqcln] ?? [],
+                                        true,
+                                    )) {
+                                        $caught_exception_conditions[$exception_fqcln][] = $condition;
+                                    }
+                                }
+                            }
                             unset($original_context->possibly_thrown_exceptions[$exception_fqcln]);
+                            unset($original_context->possibly_thrown_exception_origins[$exception_fqcln]);
+                            unset($original_context->possibly_thrown_exception_conditions[$exception_fqcln]);
                             unset($context->possibly_thrown_exceptions[$exception_fqcln]);
+                            /** @psalm-suppress EmptyArrayAccess Populated while the analyzed try block is visited */
+                            unset($context->possibly_thrown_exception_origins[$exception_fqcln]);
+                            /** @psalm-suppress EmptyArrayAccess Populated while the analyzed try block is visited */
+                            unset($context->possibly_thrown_exception_conditions[$exception_fqcln]);
                             unset($catch_context->possibly_thrown_exceptions[$exception_fqcln]);
+                            unset($catch_context->possibly_thrown_exception_origins[$exception_fqcln]);
+                            unset($catch_context->possibly_thrown_exception_conditions[$exception_fqcln]);
                         }
                     }
                 }
 
                 $catch_context->possibly_thrown_exceptions = [];
+                $catch_context->possibly_thrown_exception_origins = [];
+                $catch_context->possibly_thrown_exception_conditions = [];
             }
 
             // discard all clauses because crazy stuff may have happened in try block
@@ -329,6 +371,17 @@ final class TryAnalyzer
             $catch_context->assigned_var_ids = [];
 
             $statements_analyzer->analyze($catch->stmts, $catch_context);
+
+            if ($catch->var && is_string($catch->var->name) && $caught_exceptions !== []) {
+                self::restoreRethrownExceptions(
+                    $statements_analyzer,
+                    $catch,
+                    $catch_context,
+                    $caught_exceptions,
+                    $caught_exception_conditions,
+                    $fq_catch_classes,
+                );
+            }
 
             // recalculate in case there's a no-return clause
             $catch_actions[$i] = ScopeAnalyzer::getControlActions(
@@ -421,12 +474,24 @@ final class TryAnalyzer
 
                 $finally_context->assigned_var_ids = [];
                 $finally_context->possibly_assigned_var_ids = [];
+                $finally_context->possibly_thrown_exceptions = [];
+                $finally_context->possibly_thrown_exception_origins = [];
+                $finally_context->possibly_thrown_exception_conditions = [];
 
                 $finally_context->vars_in_scope = $try_context->finally_scope->vars_in_scope;
 
                 $statements_analyzer->analyze($stmt->finally->stmts, $finally_context);
 
                 $finally_has_returned = $finally_context->has_returned;
+
+                if ($finally_has_returned) {
+                    // A return or throw which is guaranteed to execute in finally
+                    // replaces any exception still escaping from try/catch.
+                    $context->possibly_thrown_exceptions = [];
+                    $context->possibly_thrown_exception_origins = [];
+                    $context->possibly_thrown_exception_conditions = [];
+                }
+                $context->mergeExceptions($finally_context);
 
                 /** @var string $var_id */
                 foreach ($finally_context->assigned_var_ids as $var_id => $_) {
@@ -469,6 +534,15 @@ final class TryAnalyzer
         foreach ($existing_thrown_exceptions as $possibly_thrown_exception => $codelocations) {
             foreach ($codelocations as $hash => $codelocation) {
                 $context->possibly_thrown_exceptions[$possibly_thrown_exception][$hash] = $codelocation;
+                $origin = $existing_thrown_exception_origins[$possibly_thrown_exception][$hash]
+                    ?? ThrownExceptionOrigin::PROPAGATED;
+                $context->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash] =
+                    ($context->possibly_thrown_exception_origins[$possibly_thrown_exception][$hash] ?? 0) | $origin;
+                $existing_conditions =
+                    $existing_thrown_exception_conditions[$possibly_thrown_exception][$hash] ?? [[]];
+                foreach ($existing_conditions as $condition) {
+                    $context->addThrownExceptionCondition($possibly_thrown_exception, $hash, $condition);
+                }
             }
         }
 
@@ -476,5 +550,174 @@ final class TryAnalyzer
         $context->has_returned = ($body_has_returned && $all_catches_leave) || $finally_has_returned;
 
         return null;
+    }
+
+    /**
+     * @param array<string, int> $caught_exceptions
+     * @param array<string, list<array<int, bool|int|string|null>>> $caught_exception_conditions
+     * @param non-empty-list<string> $fq_catch_classes
+     */
+    private static function restoreRethrownExceptions(
+        StatementsAnalyzer $statements_analyzer,
+        PhpParser\Node\Stmt\Catch_ $catch,
+        Context $catch_context,
+        array $caught_exceptions,
+        array $caught_exception_conditions,
+        array $fq_catch_classes,
+    ): void {
+        if (!$catch->var || !is_string($catch->var->name)) {
+            return;
+        }
+
+        $collector = new CatchRethrowCollector($catch->var->name);
+        $traverser = new PhpParser\NodeTraverser($collector);
+        $traverser->traverse($catch->stmts);
+        $rethrows = $collector->getRethrows();
+        if ($rethrows === null) {
+            return;
+        }
+
+        foreach ($rethrows as $rethrow) {
+            $codelocation = new CodeLocation($statements_analyzer->getFileAnalyzer(), $rethrow);
+            $hash = $codelocation->getHash();
+            $rethrow_exceptions = [];
+            $rethrow_conditions = [];
+
+            foreach ($catch_context->possibly_thrown_exceptions as $exception => $_) {
+                if (isset($catch_context->possibly_thrown_exceptions[$exception][$hash])) {
+                    $rethrow_exceptions[$exception] = true;
+                    $rethrow_conditions[$exception] =
+                        $catch_context->possibly_thrown_exception_conditions[$exception][$hash] ?? [[]];
+                }
+
+                unset($catch_context->possibly_thrown_exceptions[$exception][$hash]);
+                unset($catch_context->possibly_thrown_exception_origins[$exception][$hash]);
+                unset($catch_context->possibly_thrown_exception_conditions[$exception][$hash]);
+                if ($catch_context->possibly_thrown_exceptions[$exception] === []) {
+                    unset($catch_context->possibly_thrown_exceptions[$exception]);
+                    unset($catch_context->possibly_thrown_exception_origins[$exception]);
+                    unset($catch_context->possibly_thrown_exception_conditions[$exception]);
+                }
+            }
+
+            if ($rethrow_exceptions === []) {
+                continue;
+            }
+
+            $catch_types = array_map(strtolower(...), $fq_catch_classes);
+
+            $is_narrowed_rethrow = false;
+            foreach ($rethrow_exceptions as $rethrow_exception => $_) {
+                if (!in_array(strtolower($rethrow_exception), $catch_types, true)) {
+                    $is_narrowed_rethrow = true;
+                    break;
+                }
+            }
+
+            if ($is_narrowed_rethrow) {
+                foreach ($rethrow_exceptions as $rethrow_exception => $_) {
+                    $catch_context->possibly_thrown_exceptions[$rethrow_exception][$hash] = $codelocation;
+                    $catch_context->possibly_thrown_exception_origins[$rethrow_exception][$hash] =
+                        ThrownExceptionOrigin::NARROWED_RETHROW;
+                    foreach ($rethrow_conditions[$rethrow_exception] ?? [[]] as $condition) {
+                        $catch_context->addThrownExceptionCondition($rethrow_exception, $hash, $condition);
+                    }
+                }
+
+                $codebase = $statements_analyzer->getCodebase();
+                foreach ($caught_exceptions as $caught_exception => $origins) {
+                    if (($origins & (ThrownExceptionOrigin::DIRECT | ThrownExceptionOrigin::NARROWED_RETHROW)) === 0) {
+                        continue;
+                    }
+
+                    $caught_type = new Union([new TNamedObject($caught_exception)]);
+                    foreach ($rethrow_exceptions as $rethrow_exception => $_) {
+                        $rethrow_type = new Union([new TNamedObject($rethrow_exception)]);
+                        if (!UnionTypeComparator::isContainedBy($codebase, $caught_type, $rethrow_type)) {
+                            continue;
+                        }
+
+                        $combined_conditions = self::combineThrowsConditions(
+                            $caught_exception_conditions[$caught_exception] ?? [[]],
+                            $rethrow_conditions[$rethrow_exception] ?? [[]],
+                        );
+                        if ($combined_conditions === []) {
+                            continue;
+                        }
+                        $catch_context->possibly_thrown_exceptions[$caught_exception][$hash] = $codelocation;
+                        $catch_context->possibly_thrown_exception_origins[$caught_exception][$hash] = $origins;
+                        foreach ($combined_conditions as $condition) {
+                            $catch_context->addThrownExceptionCondition($caught_exception, $hash, $condition);
+                        }
+                        break;
+                    }
+                }
+
+                continue;
+            }
+
+            foreach ($caught_exceptions as $caught_exception => $origins) {
+                $combined_conditions = [];
+                foreach ($rethrow_conditions as $conditions) {
+                    foreach (self::combineThrowsConditions(
+                        $caught_exception_conditions[$caught_exception] ?? [[]],
+                        $conditions,
+                    ) as $condition) {
+                        if (!in_array($condition, $combined_conditions, true)) {
+                            $combined_conditions[] = $condition;
+                        }
+                    }
+                }
+                if ($combined_conditions === []) {
+                    continue;
+                }
+                $catch_context->possibly_thrown_exceptions[$caught_exception][$hash] = $codelocation;
+                $catch_context->possibly_thrown_exception_origins[$caught_exception][$hash] = $origins;
+                foreach ($combined_conditions as $condition) {
+                    $catch_context->addThrownExceptionCondition($caught_exception, $hash, $condition);
+                }
+            }
+        }
+    }
+
+    /**
+     * @param list<array<int, bool|int|string|null>> $left
+     * @param list<array<int, bool|int|string|null>> $right
+     * @return list<array<int, bool|int|string|null>>
+     * @psalm-pure
+     */
+    private static function combineThrowsConditions(array $left, array $right): array
+    {
+        $result = [];
+        foreach ($left as $left_condition) {
+            foreach ($right as $right_condition) {
+                $combined = $left_condition;
+                foreach ($right_condition as $offset => $value) {
+                    if (array_key_exists($offset, $combined) && $combined[$offset] !== $value) {
+                        continue 2;
+                    }
+                    $combined[$offset] = $value;
+                }
+                ksort($combined);
+                if (!in_array($combined, $result, true)) {
+                    $result[] = $combined;
+                    if (count($result) > self::MAX_THROWS_CONDITIONS) {
+                        return [[]];
+                    }
+                }
+            }
+        }
+        return $result;
+    }
+
+    /** @psalm-mutation-free */
+    private static function getExceptionOrigins(Context $context, string $exception): int
+    {
+        $origins = 0;
+        foreach ($context->possibly_thrown_exception_origins[$exception] ?? [] as $origin) {
+            $origins |= $origin;
+        }
+
+        return $origins ?: ThrownExceptionOrigin::PROPAGATED;
     }
 }

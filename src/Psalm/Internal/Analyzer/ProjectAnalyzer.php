@@ -130,6 +130,11 @@ final class ProjectAnalyzer
      */
     private array $issues_to_fix = [];
 
+    /** @var array<string, list<array{int, int}>>|null */
+    private ?array $changed_lines = null;
+
+    public ?ChangedFileScope $changed_file_scope = null;
+
     public bool $dry_run = false;
 
     public bool $full_run = false;
@@ -946,33 +951,7 @@ final class ProjectAnalyzer
 
     public function checkFile(string $file_path): void
     {
-        $this->progress->write($this->generatePHPVersionMessage());
-        $this->progress->startPhase(Phase::SCAN, $this->scanThreads);
-
-        $this->progress->debug('Checking ' . $file_path . PHP_EOL);
-
-        $this->config->visitPreloadedStubFiles($this->codebase, $this->progress);
-
-        $this->config->hide_external_errors = $this->config->isInProjectDirs($file_path);
-
-        $this->codebase->addFilesToAnalyze([$file_path => $file_path]);
-
-        $this->file_reference_provider->loadReferenceCache();
-
-        $this->config->initializePlugins($this);
-
-        $this->codebase->scanFiles($this->scanThreads);
-
-        $this->config->visitStubFiles($this->codebase, $this->progress);
-
-        $this->progress->startPhase(Phase::ANALYSIS, $this->threads);
-
-        $this->codebase->analyzer->analyzeFiles(
-            $this,
-            $this->threads,
-            $this->codebase->alter_code,
-            $this->codebase->find_unused_code === 'always',
-        );
+        $this->checkPaths([$file_path]);
     }
 
     /**
@@ -983,7 +962,11 @@ final class ProjectAnalyzer
         $this->progress->write($this->generatePHPVersionMessage());
         $this->progress->startPhase(Phase::SCAN, $this->scanThreads);
 
+        $project_files_to_scan = [];
         if (!$this->project_files_initialized) {
+            $this->initProjectFiles();
+            $project_files_to_scan = $this->project_files;
+
             $file_extensions = $this->config->getFileExtensions();
             $this->project_files = [];
             foreach ($paths_to_check as $file_path) {
@@ -1007,7 +990,7 @@ final class ProjectAnalyzer
 
         $this->visitAutoloadFiles();
 
-        $this->codebase->scanner->addFilesToShallowScan($this->extra_files);
+        $this->codebase->scanner->addFilesToShallowScan($this->extra_files + $project_files_to_scan);
 
         foreach ($paths_to_check as $path) {
             $this->progress->debug('Checking ' . $path . PHP_EOL);
@@ -1115,10 +1098,11 @@ final class ProjectAnalyzer
     public function alterCodeAfterCompletion(
         bool $dry_run = false,
         bool $safe_types = false,
+        bool $show_issues = false,
     ): void {
         $this->codebase->alter_code = true;
         $this->codebase->infer_types_from_usage = true;
-        $this->show_issues = false;
+        $this->show_issues = $show_issues;
         $this->dry_run = $dry_run;
         $this->only_replace_php_types_with_non_docblock_types = $safe_types;
     }
@@ -1178,6 +1162,8 @@ final class ProjectAnalyzer
         $supported_issues_to_fix[] = 'MissingImmutableAnnotation';
         $supported_issues_to_fix[] = 'MissingPureAnnotation';
         $supported_issues_to_fix[] = 'MissingThrowsDocblock';
+        $supported_issues_to_fix[] = 'OverlyBroadThrowsDocblock';
+        $supported_issues_to_fix[] = 'UnusedThrowsDocblock';
 
         $unsupportedIssues = array_diff(array_keys($issues), $supported_issues_to_fix);
 
@@ -1207,6 +1193,31 @@ final class ProjectAnalyzer
     public function getIssuesToFix(): array
     {
         return $this->issues_to_fix;
+    }
+
+    /**
+     * @param array<string, list<array{int, int}>> $changed_lines
+     * @psalm-external-mutation-free
+     */
+    public function restrictFixesToChangedFunctions(array $changed_lines): void
+    {
+        $this->changed_lines = $changed_lines;
+    }
+
+    /** @psalm-mutation-free */
+    public function canFixFunctionLike(string $file_path, int $start_line, int $end_line): bool
+    {
+        if ($this->changed_lines === null) {
+            return true;
+        }
+
+        foreach ($this->changed_lines[$file_path] ?? [] as [$changed_start, $changed_end]) {
+            if ($changed_start <= $end_line && $changed_end >= $start_line) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function getCodebase(): Codebase

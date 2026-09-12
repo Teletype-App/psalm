@@ -15,6 +15,7 @@ use Psalm\Internal\Algebra;
 use Psalm\Internal\Algebra\FormulaGenerator;
 use Psalm\Internal\Analyzer\ClassLikeAnalyzer;
 use Psalm\Internal\Analyzer\FunctionLikeAnalyzer;
+use Psalm\Internal\Analyzer\InferredThrowsBuffer;
 use Psalm\Internal\Analyzer\Statements\Expression\Call\ArgumentsAnalyzer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Analyzer\TraitAnalyzer;
@@ -299,6 +300,7 @@ abstract class CallAnalyzer
         $class_storage = $codebase->classlike_storage_provider->get($fq_class_name);
 
         $method_storage = null;
+        $throws_storages = [];
 
         if (isset($class_storage->declaring_method_ids[$method_name])) {
             $declaring_method_id = $class_storage->declaring_method_ids[$method_name];
@@ -327,7 +329,28 @@ abstract class CallAnalyzer
             }
 
             if (!$context->isSuppressingExceptions($statements_analyzer)) {
-                $context->mergeFunctionExceptions($method_storage, $code_location);
+                $throws_storages[] = $method_storage;
+
+                if ($declaring_class_storage->is_trait) {
+                    // A trait body is analyzed in its using class, never on its own.
+                    $appearing_id = $codebase->methods->getAppearingMethodId($method_id);
+                    if ($appearing_id !== null) {
+                        $appearing_storage = $codebase->classlike_storage_provider->get($appearing_id->fq_class_name);
+                        if ($appearing_storage->location !== null) {
+                            InferredThrowsBuffer::addDependency(
+                                $appearing_storage->location->file_path,
+                                -1,
+                                $code_location->file_path,
+                            );
+                        }
+                    }
+                }
+
+                if ($declaring_class_storage->is_trait && $method_storage->inheritdoc) {
+                    foreach ($codebase->methods->getOverriddenMethodIds($method_id) as $overridden_method_id) {
+                        $throws_storages[] = $codebase->methods->getStorage($overridden_method_id);
+                    }
+                }
             }
         }
 
@@ -341,6 +364,10 @@ abstract class CallAnalyzer
             $template_result,
         ) === false) {
             return false;
+        }
+
+        foreach ($throws_storages as $throws_storage) {
+            $context->mergeFunctionExceptions($throws_storage, $code_location, $args, $statements_analyzer);
         }
 
         if (ArgumentsAnalyzer::checkArgumentsMatch(

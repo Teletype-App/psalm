@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Psalm\Internal\Scanner;
 
 use function explode;
+use function preg_replace;
+use function rtrim;
 use function trim;
 
 /**
@@ -58,7 +60,19 @@ final class ParsedDocblock
                 }
 
                 foreach ($lines as $line) {
-                    $doc_comment_text .= $left_padding . ' * @' . $type . ($line !== '' ? ' ' . $line : '') . "\n";
+                    foreach (explode("\n", $line) as $line_offset => $annotation_line) {
+                        if ($line_offset === 0) {
+                            $annotation_line = rtrim($annotation_line);
+                            $doc_comment_text .= $left_padding . ' * @' . $type
+                                . ($annotation_line !== '' ? ' ' . $annotation_line : '') . "\n";
+                            continue;
+                        }
+
+                        $annotation_line = preg_replace('/^\h*\*\h?/', '', $annotation_line) ?? $annotation_line;
+                        $annotation_line = rtrim($annotation_line);
+                        $doc_comment_text .= $left_padding . ' *'
+                            . ($annotation_line !== '' ? ' ' . $annotation_line : '') . "\n";
+                    }
                 }
 
                 $last_type = $type;

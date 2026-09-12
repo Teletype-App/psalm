@@ -519,6 +519,10 @@ final class LoopAnalyzer
             $statements_analyzer,
         );
 
+        if ($loop_context->collect_exceptions) {
+            $loop_context->mergeExceptions($continue_context);
+        }
+
         return null;
     }
 

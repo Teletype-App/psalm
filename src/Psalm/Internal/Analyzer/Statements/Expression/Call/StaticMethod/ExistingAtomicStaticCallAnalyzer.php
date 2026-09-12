@@ -200,6 +200,8 @@ final class ExistingAtomicStaticCallAnalyzer
             return;
         }
 
+        $provider_fq_class_name = $fq_class_name;
+
         $fq_class_name = $stmt->class instanceof PhpParser\Node\Name && $stmt->class->getParts() === ['parent']
             ? (string) $statements_analyzer->getFQCLN()
             : $fq_class_name;
@@ -208,14 +210,17 @@ final class ExistingAtomicStaticCallAnalyzer
 
         $return_type_candidate = null;
 
-        if ($codebase->methods->return_type_provider->has($fq_class_name)) {
+        if ($codebase->methods->return_type_provider->has($provider_fq_class_name)) {
             $return_type_candidate = $codebase->methods->return_type_provider->getReturnType(
                 $statements_analyzer,
-                $fq_class_name,
+                $provider_fq_class_name,
                 $stmt_name->name,
                 $stmt,
                 $context,
                 new CodeLocation($statements_analyzer->getSource(), $stmt_name),
+                null,
+                $fq_class_name,
+                $stmt_name->name,
             );
         }
 

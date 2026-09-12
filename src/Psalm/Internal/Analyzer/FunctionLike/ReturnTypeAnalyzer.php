@@ -1045,11 +1045,13 @@ final class ReturnTypeAnalyzer
                 $source->getAliasedClassesFlipped(),
                 $source->getFQCLN(),
                 false,
+                true,
             ),
             $inferred_return_type->toNamespacedString(
                 $source->getNamespace(),
                 $source->getAliasedClassesFlipped(),
                 $source->getFQCLN(),
+                true,
                 true,
             ),
             $inferred_return_type->canBeFullyExpressedInPhp($codebase->analysis_php_version_id),

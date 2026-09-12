@@ -120,3 +120,12 @@ namespace Random
     {
     }
 }
+
+namespace
+{
+    /**
+     * @throws \Random\RandomException
+     * @throws \ValueError
+     */
+    function random_int(int $min, int $max): int {}
+}

@@ -297,12 +297,14 @@ final class DocumentationTest extends TestCase
             switch ($issue_name) {
                 case 'InvalidStringClass':
                 case 'MissingThrowsDocblock':
+                case 'OverlyBroadThrowsDocblock':
                 case 'PluginClass':
                 case 'RedundantIdentityWithTrue':
                 case 'TraitMethodSignatureMismatch':
                 case 'UncaughtThrowInGlobalScope':
                 case UnusedBaselineEntry::getIssueType():
                 case UnusedIssueHandlerSuppression::getIssueType():
+                case 'UnusedThrowsDocblock':
                     continue 2;
 
                 /** @todo reinstate this test when the issue is restored */

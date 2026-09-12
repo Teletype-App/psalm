@@ -20,6 +20,7 @@
             <xs:element name="forbiddenConstants" type="ConstantType" minOccurs="0" maxOccurs="1" />
             <xs:element name="issueHandlers" type="IssueHandlersType" minOccurs="0" maxOccurs="1" />
             <xs:element name="ignoreExceptions" type="ExceptionsType" minOccurs="0" maxOccurs="1" />
+            <xs:element name="throwsImportAliases" type="ImportAliasesType" minOccurs="0" maxOccurs="1" />
             <xs:element name="globals" type="GlobalsType" minOccurs="0" maxOccurs="1" />
             <xs:element name="universalObjectCrates" type="UniversalObjectCratesType" minOccurs="0" maxOccurs="1" />
             <xs:element name="enableExtensions" type="ExtensionsType" minOccurs="0" maxOccurs="1" />
@@ -172,6 +173,19 @@
             <xs:element name="class" minOccurs="0" maxOccurs="unbounded" type="ExceptionType" />
             <xs:element name="classAndDescendants" minOccurs="0" maxOccurs="unbounded" type="ExceptionType" />
         </xs:sequence>
+        <xs:anyAttribute processContents="skip" />
+    </xs:complexType>
+
+    <xs:complexType name="ImportAliasesType">
+        <xs:sequence>
+            <xs:element name="class" minOccurs="0" maxOccurs="unbounded" type="ImportAliasType" />
+        </xs:sequence>
+        <xs:anyAttribute processContents="skip" />
+    </xs:complexType>
+
+    <xs:complexType name="ImportAliasType">
+        <xs:attribute name="name" type="xs:string" use="required" />
+        <xs:attribute name="alias" type="xs:string" use="required" />
         <xs:anyAttribute processContents="skip" />
     </xs:complexType>
 
@@ -393,6 +407,7 @@
             <xs:element name="NullPropertyAssignment" type="PropertyIssueHandlerType" minOccurs="0" />
             <xs:element name="NullPropertyFetch" type="PropertyIssueHandlerType" minOccurs="0" />
             <xs:element name="NullReference" type="IssueHandlerType" minOccurs="0" />
+            <xs:element name="OverlyBroadThrowsDocblock" type="ClassIssueHandlerType" minOccurs="0" />
             <xs:element name="OverriddenFinalConstant" type="ClassConstantIssueHandlerType" minOccurs="0" />
             <xs:element name="OverriddenInterfaceConstant" type="ClassConstantIssueHandlerType" minOccurs="0" />
             <xs:element name="OverriddenMethodAccess" type="IssueHandlerType" minOccurs="0" />
@@ -537,6 +552,7 @@
             <xs:element name="UnusedProperty" type="PropertyIssueHandlerType" minOccurs="0" />
             <xs:element name="UnusedPsalmSuppress" type="FunctionIssueHandlerType" minOccurs="0" />
             <xs:element name="UnusedReturnValue" type="IssueHandlerType" minOccurs="0" />
+            <xs:element name="UnusedThrowsDocblock" type="ClassIssueHandlerType" minOccurs="0" />
             <xs:element name="UnusedVariable" type="IssueHandlerType" minOccurs="0" />
         </xs:choice>
         <xs:anyAttribute processContents="skip" />

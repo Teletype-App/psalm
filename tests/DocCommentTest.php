@@ -214,6 +214,27 @@ final class DocCommentTest extends BaseTestCase
         $this->assertSame($expectedDoc, $docComment->render(''));
     }
 
+    public function testParsingMultilineAnnotation(): void
+    {
+        ParsedDocblock::addNewLineBetweenAnnotations(true);
+
+        $expectedDoc = <<<'PHP'
+            /**
+             * @inheritDoc
+             *
+             * Description
+             *
+             * @throws \Exception
+             */
+
+            PHP;
+        $docComment = DocComment::parsePreservingLength(
+            new Doc($expectedDoc),
+        );
+
+        $this->assertSame($expectedDoc, $docComment->render(''));
+    }
+
     public function testParsingNumericComment(): void
     {
         ParsedDocblock::addNewLineBetweenAnnotations(true);

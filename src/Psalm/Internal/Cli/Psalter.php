@@ -7,6 +7,7 @@ namespace Psalm\Internal\Cli;
 use AssertionError;
 use Psalm\Config;
 use Psalm\Exception\UnsupportedIssueToFixException;
+use Psalm\Internal\Analyzer\ChangedFileScope;
 use Psalm\Internal\Analyzer\ProjectAnalyzer;
 use Psalm\Internal\CliUtils;
 use Psalm\Internal\Composer;
@@ -26,15 +27,17 @@ use Psalm\Progress\DefaultProgress;
 use Psalm\Progress\VoidProgress;
 use Psalm\Report;
 use Psalm\Report\ReportOptions;
+use RuntimeException;
 
+use function array_diff_key;
 use function array_filter;
 use function array_key_exists;
+use function array_keys;
 use function array_map;
 use function array_shift;
 use function array_slice;
 use function assert;
 use function chdir;
-use function count;
 use function explode;
 use function file_exists;
 use function file_get_contents;
@@ -48,6 +51,7 @@ use function implode;
 use function in_array;
 use function is_array;
 use function is_dir;
+use function is_file;
 use function is_string;
 use function microtime;
 use function pathinfo;
@@ -66,6 +70,7 @@ use const FILTER_NULL_ON_FAILURE;
 use const FILTER_VALIDATE_BOOLEAN;
 use const PATHINFO_EXTENSION;
 use const PHP_EOL;
+use const PHP_INT_MAX;
 use const STDERR;
 
 // phpcs:disable PSR1.Files.SideEffects
@@ -86,12 +91,17 @@ final class Psalter
     private const LONG_OPTIONS = [
         'help', 'debug', 'debug-by-line', 'debug-emitted-issues', 'config:', 'file:', 'root:',
         'plugin:', 'issues:', 'list-supported-issues', 'php-version:', 'dry-run', 'safe-types',
-        'find-unused-code', 'threads:', 'scan-threads:', 'codeowner:',
+        'find-unused-code', 'find-unused-variables', 'threads:', 'scan-threads:', 'codeowner:',
         'allow-backwards-incompatible-changes:',
         'add-newline-between-docblock-annotations:',
         'no-cache',
         'no-progress',
         'memory-limit:',
+        'changed',
+        'report-changed',
+        'show-inferred-throws',
+        'full-file:',
+        'base:',
     ];
 
     /** @param array<int,string> $argv */
@@ -144,6 +154,9 @@ final class Psalter
                 --no-progress
                     Disable the progress indicator
 
+                --show-inferred-throws
+                    Show why inferred exceptions can escape, including call chains and argument conditions
+
                 -r, --root
                     If running Psalm globally you'll need to specify a project root. Defaults to cwd
 
@@ -152,6 +165,18 @@ final class Psalter
 
                 --dry-run
                     Shows a diff of all the changes, without making them
+
+                --changed
+                    Only update functions and methods touched by Git changes
+
+                --report-changed
+                    Only report issues in changed functions or changed lines; requires --changed
+
+                --full-file=PATH
+                    Fix and report the whole file, overriding --changed; repeatable
+
+                --base=REF
+                    Include changes committed since the merge base with REF; requires --changed
 
                 --safe-types
                     Only update PHP types when the new type information comes from other PHP types,
@@ -168,6 +193,9 @@ final class Psalter
 
                 --find-unused-code
                     Include unused code as a candidate for removal
+
+                --find-unused-variables
+                    Report unused variables and parameters while applying fixes
 
                 --threads=INT
                     If greater than one, Psalm will run analysis on multiple threads, speeding things up.
@@ -315,6 +343,12 @@ final class Psalter
             $progress,
         );
 
+        if (array_key_exists('show-inferred-throws', $options)) {
+            $config->check_for_throws_docblock = true;
+        }
+
+        self::configureChangedScope($options, $project_analyzer, $current_dir, $paths_to_check);
+
         if (array_key_exists('debug-by-line', $options)) {
             $project_analyzer->debug_lines = true;
         }
@@ -338,6 +372,22 @@ final class Psalter
             }
         } else {
             $keyed_issues = [];
+        }
+
+        if (array_key_exists('changed', $options)) {
+            $changed_mode_issues = [
+                'MissingThrowsDocblock' => true,
+                'OverlyBroadThrowsDocblock' => true,
+                'UnusedThrowsDocblock' => true,
+            ];
+            $unsupported_changed_issues = array_diff_key($keyed_issues, $changed_mode_issues);
+            if ($unsupported_changed_issues !== []) {
+                fwrite(
+                    STDERR,
+                    '--changed currently supports only throws docblock issues' . PHP_EOL,
+                );
+                exit(1);
+            }
         }
 
         CliUtils::initPhpVersion($options, $config, $project_analyzer);
@@ -406,10 +456,12 @@ final class Psalter
         }
 
         $find_unused_code = array_key_exists('find-unused-code', $options);
+        $find_unused_variables = $config->find_unused_variables
+            || array_key_exists('find-unused-variables', $options);
 
         foreach ($keyed_issues as $issue_name => $_) {
             // MissingParamType requires the scanning of all files to inform possible params
-            if (str_contains($issue_name, 'Unused')
+            if ((str_contains($issue_name, 'Unused') && $issue_name !== 'UnusedThrowsDocblock')
                 || $issue_name === 'MissingParamType'
                 || $issue_name === 'UnnecessaryVarAnnotation'
                 || $issue_name === 'all'
@@ -423,9 +475,14 @@ final class Psalter
             $project_analyzer->getCodebase()->reportUnusedCode();
         }
 
+        if ($find_unused_variables) {
+            $project_analyzer->getCodebase()->reportUnusedVariables();
+        }
+
         $project_analyzer->alterCodeAfterCompletion(
             array_key_exists('dry-run', $options),
             array_key_exists('safe-types', $options),
+            $find_unused_variables || isset($options['report-changed']) || isset($options['full-file']),
         );
 
         if ($keyed_issues === ['all' => true]) {
@@ -441,7 +498,7 @@ final class Psalter
 
         $start_time = microtime(true);
 
-        if ($paths_to_check === null || count($paths_to_check) > 1 || $find_unused_code) {
+        if ($paths_to_check === null || $find_unused_code) {
             if ($paths_to_check) {
                 $files_to_update = [];
 
@@ -460,16 +517,71 @@ final class Psalter
 
             $project_analyzer->check($current_dir);
         } elseif ($paths_to_check) {
-            foreach ($paths_to_check as $path_to_check) {
-                if (is_dir($path_to_check)) {
-                    $project_analyzer->checkDir($path_to_check);
-                } else {
-                    $project_analyzer->checkFile($path_to_check);
-                }
-            }
+            $project_analyzer->checkPaths($paths_to_check);
+        }
+
+        if (array_key_exists('show-inferred-throws', $options)) {
+            fwrite(STDERR, $project_analyzer->getCodebase()->analyzer->getInferredThrowsReport());
         }
 
         IssueBuffer::finish($project_analyzer, false, $start_time);
+    }
+
+    /**
+     * @param array<string, list<mixed>|string|false> $options
+     * @param list<string>|null $paths_to_check
+     */
+    private static function configureChangedScope(
+        array $options,
+        ProjectAnalyzer $project_analyzer,
+        string $current_dir,
+        ?array &$paths_to_check,
+    ): void {
+        if (isset($options['base']) && !array_key_exists('changed', $options)) {
+            fwrite(STDERR, '--base requires --changed' . PHP_EOL);
+            exit(1);
+        }
+
+        if ((isset($options['report-changed']) || isset($options['full-file']))
+            && !array_key_exists('changed', $options)
+        ) {
+            fwrite(STDERR, '--report-changed and --full-file require --changed' . PHP_EOL);
+            exit(1);
+        }
+
+        if (array_key_exists('changed', $options)) {
+            $base_ref = $options['base'] ?? null;
+            if ($base_ref !== null && (!is_string($base_ref) || $base_ref === '')) {
+                fwrite(STDERR, '--base expects a Git ref' . PHP_EOL);
+                exit(1);
+            }
+            assert($base_ref === null || is_string($base_ref));
+
+            try {
+                $changed_lines = GitChangedLines::collect($current_dir, $base_ref);
+            } catch (RuntimeException $e) {
+                fwrite(STDERR, $e->getMessage() . PHP_EOL);
+                exit(1);
+            }
+
+            $full_files = $options['full-file'] ?? [];
+            $full_files = is_array($full_files) ? $full_files : [$full_files];
+            foreach (array_keys($full_files) as $index) {
+                $path = is_string($full_files[$index]) && $full_files[$index] !== ''
+                    ? realpath($full_files[$index])
+                    : false;
+                if ($path === false || !is_file($path)) {
+                    fwrite(STDERR, '--full-file expects an existing file' . PHP_EOL);
+                    exit(1);
+                }
+                $changed_lines[$path] = [[1, PHP_INT_MAX]];
+                $paths_to_check[] = $path;
+            }
+            $project_analyzer->restrictFixesToChangedFunctions($changed_lines);
+            if (array_key_exists('report-changed', $options)) {
+                $project_analyzer->changed_file_scope = new ChangedFileScope($changed_lines);
+            }
+        }
     }
 
     /** @param array<int,string> $args */

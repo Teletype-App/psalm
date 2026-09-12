@@ -14,7 +14,9 @@ use Psalm\Internal\Provider\ReturnTypeProvider\DomNodeAppendChild;
 use Psalm\Internal\Provider\ReturnTypeProvider\ImagickPixelColorReturnTypeProvider;
 use Psalm\Internal\Provider\ReturnTypeProvider\PdoStatementReturnTypeProvider;
 use Psalm\Plugin\EventHandler\Event\MethodReturnTypeProviderEvent;
+use Psalm\Plugin\EventHandler\Event\MixedMethodReturnTypeProviderEvent;
 use Psalm\Plugin\EventHandler\MethodReturnTypeProviderInterface;
+use Psalm\Plugin\EventHandler\MixedMethodReturnTypeProviderInterface;
 use Psalm\StatementsSource;
 use Psalm\Type\Union;
 
@@ -34,9 +36,13 @@ final class MethodReturnTypeProvider
      */
     private static array $handlers = [];
 
+    /** @var list<Closure(MixedMethodReturnTypeProviderEvent): ?Union> */
+    private static array $mixed_handlers = [];
+
     public function __construct()
     {
         self::$handlers = [];
+        self::$mixed_handlers = [];
 
         $this->registerClass(DomNodeAppendChild::class);
         $this->registerClass(ImagickPixelColorReturnTypeProvider::class);
@@ -57,6 +63,42 @@ final class MethodReturnTypeProvider
                 $this->registerClosure($fq_classlike_name, $callable);
             }
         }
+
+        if (is_subclass_of($class, MixedMethodReturnTypeProviderInterface::class, true)) {
+            self::$mixed_handlers[] = $class::getMixedMethodReturnType(...);
+        }
+    }
+
+    /** @psalm-external-mutation-free */
+    public function hasMixedHandlers(): bool
+    {
+        return self::$mixed_handlers !== [];
+    }
+
+    public function getMixedReturnType(
+        StatementsSource $statements_source,
+        string $method_name,
+        PhpParser\Node\Expr\MethodCall $stmt,
+        Context $context,
+        CodeLocation $code_location,
+    ): ?Union {
+        $event = new MixedMethodReturnTypeProviderEvent(
+            $statements_source,
+            strtolower($method_name),
+            $stmt,
+            $context,
+            $code_location,
+        );
+
+        foreach (self::$mixed_handlers as $handler) {
+            $result = $handler($event);
+
+            if ($result) {
+                return $result;
+            }
+        }
+
+        return null;
     }
 
     /**

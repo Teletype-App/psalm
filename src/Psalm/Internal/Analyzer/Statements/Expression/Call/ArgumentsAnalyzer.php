@@ -80,6 +80,31 @@ final class ArgumentsAnalyzer
     ];
 
     /**
+     * Native functions which execute a callable argument before returning.
+     * Deferred registrations, such as register_shutdown_function(), must not
+     * be added here because exceptions from those callbacks do not escape the
+     * registration call.
+     *
+     * @var array<string, list<int>>
+     */
+    private const IMMEDIATELY_INVOKED_NATIVE_CALLBACKS = [
+        'array_all' => [1],
+        'array_any' => [1],
+        'array_filter' => [1],
+        'array_find' => [1],
+        'array_find_key' => [1],
+        'array_map' => [0],
+        'array_reduce' => [1],
+        'array_walk' => [1],
+        'array_walk_recursive' => [1],
+        'iterator_apply' => [1],
+        'preg_replace_callback' => [1],
+        'uasort' => [1],
+        'uksort' => [1],
+        'usort' => [1],
+    ];
+
+    /**
      * @param   list<PhpParser\Node\Arg>          $args
      * @param   array<int, FunctionLikeParameter>|null  $function_params
      * @return  false|null
@@ -240,6 +265,19 @@ final class ArgumentsAnalyzer
 
             $was_inside_isset = $context->inside_isset;
             $context->inside_isset = false;
+
+            if (($param?->is_immediately_invoked_callable
+                    || ($method_id !== null
+                        && in_array(
+                            $argument_offset,
+                            self::IMMEDIATELY_INVOKED_NATIVE_CALLBACKS[strtolower($method_id)] ?? [],
+                            true,
+                        )))
+                && ($arg->value instanceof PhpParser\Node\Expr\Closure
+                    || $arg->value instanceof PhpParser\Node\Expr\ArrowFunction)
+            ) {
+                $statements_analyzer->node_data->setImmediatelyInvokedClosure($arg->value);
+            }
 
             if (ExpressionAnalyzer::analyze(
                 $statements_analyzer,

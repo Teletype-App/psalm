@@ -47,10 +47,11 @@ use Psalm\Type\Atomic\TTemplateParamClass;
 use Psalm\Type\Atomic\TTrue;
 
 use function array_filter;
+use function array_search;
 use function array_unique;
+use function array_values;
 use function count;
 use function implode;
-use function ksort;
 use function reset;
 use function sort;
 use function str_contains;
@@ -248,6 +249,7 @@ trait UnionTrait
         array $aliased_classes,
         ?string $this_class,
         bool $use_phpdoc_format,
+        bool $use_php_union_order = false,
     ): string {
         $other_types = [];
 
@@ -285,8 +287,13 @@ trait UnionTrait
             $other_types[] = 'string';
         }
 
-        sort($other_types);
-        return implode('|', array_unique($other_types));
+        if ($use_php_union_order) {
+            $other_types = self::sortTypeStringsForPhp($other_types);
+        } else {
+            sort($other_types);
+            $other_types = array_unique($other_types);
+        }
+        return implode('|', $other_types);
     }
 
     /**
@@ -349,8 +356,7 @@ trait UnionTrait
                 $php_types['null'] = 'null';
             }
             $php_types['false'] = 'false';
-            ksort($php_types);
-            return implode('|', array_unique($php_types));
+            return implode('|', self::sortTypeStringsForPhp($php_types));
         }
 
         if ($analysis_php_version_id < 8_00_00) {
@@ -359,7 +365,26 @@ trait UnionTrait
         if ($nullable) {
             $php_types['null'] = 'null';
         }
-        return implode('|', array_unique($php_types));
+        return implode('|', self::sortTypeStringsForPhp($php_types));
+    }
+
+    /**
+     * @param array<array-key, string> $types
+     * @return list<string>
+     * @psalm-pure
+     */
+    private static function sortTypeStringsForPhp(array $types): array
+    {
+        sort($types);
+        $types = array_values(array_unique($types));
+
+        $null_offset = array_search('null', $types, true);
+        if ($null_offset !== false) {
+            unset($types[$null_offset]);
+            $types[] = 'null';
+        }
+
+        return array_values($types);
     }
 
     /**

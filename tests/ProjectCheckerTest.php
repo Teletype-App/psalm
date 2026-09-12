@@ -60,7 +60,7 @@ final class ProjectCheckerTest extends TestCase
         $this->file_provider = new FakeFileProvider();
     }
 
-    private function getProjectAnalyzerWithConfig(Config $config): ProjectAnalyzer
+    private function getProjectAnalyzerWithConfig(Config $config, bool $initialize = true): ProjectAnalyzer
     {
         $config->setIncludeCollector(new IncludeCollector());
         $ret = new ProjectAnalyzer(
@@ -75,8 +75,10 @@ final class ProjectCheckerTest extends TestCase
             ),
             new ReportOptions(),
         );
-        $ret->initProjectFiles();
-        $ret->initExtraFiles();
+        if ($initialize) {
+            $ret->initProjectFiles();
+            $ret->initExtraFiles();
+        }
         return $ret;
     }
 
@@ -357,22 +359,20 @@ final class Bat
                     </projectFiles>
                 </psalm>',
             ),
+            false,
         );
 
-        $this->project_analyzer->setPhpVersion('8.1', 'tests');
+        $this->project_analyzer->setPhpVersion('8.5', 'tests');
 
         $this->project_analyzer->progress = new EchoProgress();
 
         ob_start();
-        // checkPaths expects absolute paths,
-        // otherwise it's unable to match them against configured folders
-        $this->project_analyzer->checkPaths([
+        $this->project_analyzer->checkFile(
             (string) realpath((string) getcwd() . '/tests/fixtures/DummyProject/Bar.php'),
-            (string) realpath((string) getcwd() . '/tests/fixtures/DummyProject/SomeTrait.php'),
-        ]);
+        );
         $output = (string) ob_get_clean();
 
-        $this->assertStringContainsString('Target PHP version: 8.1 (set by tests)', $output);
+        $this->assertStringContainsString('Target PHP version: 8.5 (set by tests)', $output);
         $this->assertStringContainsString('Scanning files...', $output);
         $this->assertStringContainsString('Analyzing files...', $output);
 

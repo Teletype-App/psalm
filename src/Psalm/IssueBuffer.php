@@ -261,11 +261,14 @@ final class IssueBuffer
     {
         $config = Config::getInstance();
         $project_analyzer = ProjectAnalyzer::getInstance();
+        $codebase = $project_analyzer->getCodebase();
 
         $fqcn_parts = explode('\\', $e::class);
         $issue_type = array_pop($fqcn_parts);
 
-        if (!$project_analyzer->show_issues) {
+        if (!$project_analyzer->show_issues
+            || ($codebase->alter_code && isset($project_analyzer->getIssuesToFix()[$issue_type]))
+        ) {
             return false;
         }
 
@@ -564,6 +567,22 @@ final class IssueBuffer
 
         foreach ($codebase->config->config_issues as $issue) {
             self::maybeAdd($issue);
+        }
+
+        if ($project_analyzer->changed_file_scope !== null) {
+            self::$issues_data = $project_analyzer->changed_file_scope->filterAndRelocate(
+                self::$issues_data,
+                $codebase,
+            );
+            $fixable_counts = [];
+            foreach (self::$issues_data as $file_issues) {
+                foreach ($file_issues as $issue) {
+                    if (isset(self::$fixable_issue_counts[$issue->type])) {
+                        $fixable_counts[$issue->type] = ($fixable_counts[$issue->type] ?? 0) + 1;
+                    }
+                }
+            }
+            self::$fixable_issue_counts = $fixable_counts;
         }
 
         $error_count = 0;

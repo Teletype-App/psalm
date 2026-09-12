@@ -25,6 +25,45 @@ Updating code is inherently risky, doing so automatically is even more so. I've 
 - it has a `--safe-types` mode that will only update PHP 7 return typehints with information Psalm has gathered from non-docblock sources of type information (e.g. typehinted params, `instanceof` checks, other return typehints etc.)
 - using `--allow-backwards-incompatible-changes=false` you can make sure to not create backwards incompatible changes
 
+## Reporting unused variables while fixing code
+
+Psalter can report unused variables and parameters during the same analysis pass that applies fixes:
+
+```bash
+vendor/bin/psalter --issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock --find-unused-variables src/Service.php
+```
+
+Issues selected by `--issues` are fixed and omitted from the report. Remaining issues, including unused variables and parameters, are reported normally and produce a non-zero exit code.
+
+
+## Updating throws in changed methods
+
+With `checkForThrowsDocblock="true"`, you can update exception documentation only in functions and methods touched by Git changes:
+
+```bash
+vendor/bin/psalter --changed --base=origin/develop \
+  --issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock \
+  --threads=1 --scan-threads=1 src/Service.php
+```
+
+Paths and `--changed` restrict which files and declarations are edited. Psalm also analyzes the transitive method and function calls in configured project files to infer their exceptions, including bodies without `@throws`. Dependency files are not edited unless selected. Library code outside the configured project continues to use its declared contracts; unresolved dynamic calls remain subject to the normal limits of static analysis.
+
+`MissingThrowsDocblock` adds each inferred exception type even when an existing `@throws Throwable` already covers it. Combining the three issues also removes unused or overly broad annotations based on the analyzed bodies.
+
+Keep the default cache enabled for repeated runs. Scanned storage is validated against file contents, and inferred exception summaries are rebuilt on each run, so replacing or removing a throw in a dependency invalidates the result even when its timestamp is unchanged. One analysis and scan process can reduce startup overhead for small selections; larger selections may benefit from more processes.
+
+To apply fixes and report remaining issues in the same invocation, use `--report-changed`:
+
+```bash
+vendor/bin/psalter --changed --report-changed --base=origin/develop \
+  --full-file=src/NewService.php \
+  --issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock \
+  src/ExistingService.php
+```
+
+`--full-file=PATH` is repeatable and adds each file to the selection. These files receive the configured fixes and all normally enabled diagnostics, including unchanged code. Other selected files receive fixes and diagnostics in changed functions and methods; diagnostics outside functions are restricted to changed lines. Syntax errors remain visible because they can prevent analysis of changed code. New files in the Git diff already have all their lines selected; `--full-file` also supports explicitly treating an existing file as a whole.
+
+Both options require `--changed` and retain its throws-only restriction on fixes. `--report-changed` enables reporting even without `--find-unused-variables`. Remaining errors produce exit code 2; hidden errors from unchanged code do not. After writing docblocks and imports, reported locations refer to the updated file. With `--dry-run`, locations refer to the original file and no changes are written.
 
 ## Plugins
 
@@ -613,3 +652,42 @@ class AChild extends A {
     }
 }
 ```
+
+### Cached inferred exceptions in this fork
+
+When throws analysis is enabled, Psalm stores computed exception sets in
+`inferred-throws-v1.json` inside its project cache directory. A summary is keyed by
+method/function identity and does not require an existing `@throws` annotation.
+Only results after convergence are saved; the cache does not contain diagnostics
+or authorize edits outside the selected scope.
+
+Selected files are still analyzed. With `--changed --report-changed`, the initial
+body analysis starts at changed methods/functions; called helpers, including
+helpers in the same file, are discovered transitively. `--full-file` retains full
+coverage for new files. Ordinary full-file diagnostics are not narrowed.
+For dependencies, unchanged summaries can replace body analysis. Content hashes
+invalidate a changed method and its transitive callers, including replacements
+that preserve file size and mtime. Unrelated methods in the same files retain
+their summaries. Declaration positions are remapped when preceding code changes
+length. Call-site edges are collected by each analysis worker and persisted with
+the summaries; missing method graphs invalidate the affected summaries and callers.
+Unknown call contexts, closures without standalone summaries and shared traits
+retain conservative file dependencies. The outer quality cache still operates
+at file granularity; selected roots are analyzed for diagnostics and PHPDoc edits.
+Changes to declarations,
+PHPDoc, imports, the project file set, configuration, runtime, vendor or analyzer
+implementation invalidate the cache conservatively. Missing dependency inputs
+prevent reuse. `--no-cache` disables both reading and writing these summaries.
+Language-server/in-memory analysis does not use this disk cache.
+
+The first calculation can still be expensive. A completed `make quality` has an
+additional outer cache that can skip analyzers entirely on an identical run;
+this summary cache helps when an analyzer actually needs to run again. Writer
+changes to PHPDoc/imports invalidate pre-write summaries on the next analyzer
+invocation. No partially converged summaries are saved after an interrupted run.
+
+Shared trait methods retain separate results for their using-file contexts during
+convergence. Revisiting one class must not erase exceptions inferred in another
+class and cause endless alternating passes. Trait bodies are not persisted as
+context-free summaries; graph-only nodes preserve their dependencies on using
+classes, and a changed selection invalidates these contextual nodes and callers.

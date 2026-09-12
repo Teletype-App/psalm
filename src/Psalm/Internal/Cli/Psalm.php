@@ -152,6 +152,7 @@ final class Psalm
         'root:',
         'set-baseline::',
         'show-info:',
+        'show-inferred-throws',
         'show-snippet::',
         'stats',
         'threads:',
@@ -389,6 +390,10 @@ final class Psalm
             $run_taint_analysis,
         );
 
+        if (array_key_exists('show-inferred-throws', $options)) {
+            $config->check_for_throws_docblock = true;
+        }
+
         if ($config->run_taint_analysis || $run_taint_analysis) {
             $is_diff = false;
         }
@@ -419,6 +424,10 @@ final class Psalm
 
         if (isset($options['generate-stubs'])) {
             self::generateStubs($options, $providers, $project_analyzer);
+        }
+
+        if (array_key_exists('show-inferred-throws', $options)) {
+            fwrite(STDERR, $project_analyzer->getCodebase()->analyzer->getInferredThrowsReport());
         }
 
         if (!isset($options['i'])) {
@@ -1438,12 +1447,18 @@ final class Psalm
             --show-info[=BOOLEAN]
                 Show non-exception parser findings (defaults to false).
 
+            --show-inferred-throws
+                Show why inferred exceptions can escape, including call chains and argument conditions.
+
             --show-snippet[=true]
                 Show code snippets with errors. Options are 'true' or 'false'
 
             --find-dead-code[=auto]
             --find-unused-code[=auto]
                 Look for unused code. Options are 'auto' or 'always'. If no value is specified, default is 'auto'
+
+            --find-unused-variables
+                Look for unused variables and parameters
 
             --find-unused-psalm-suppress
                 Finds all @psalm-suppress annotations that aren’t used

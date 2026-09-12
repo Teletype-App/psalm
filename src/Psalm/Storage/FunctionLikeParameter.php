@@ -29,6 +29,8 @@ final class FunctionLikeParameter implements HasAttributesInterface, TypeNode
 
     public bool $expect_variable = false;
 
+    public bool $is_immediately_invoked_callable = false;
+
     public bool $promoted_property = false;
 
     /**

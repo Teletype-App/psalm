@@ -14,6 +14,7 @@ use Psalm\Plugin\EventHandler\MethodExistenceProviderInterface;
 use Psalm\Plugin\EventHandler\MethodParamsProviderInterface;
 use Psalm\Plugin\EventHandler\MethodReturnTypeProviderInterface;
 use Psalm\Plugin\EventHandler\MethodVisibilityProviderInterface;
+use Psalm\Plugin\EventHandler\MixedMethodReturnTypeProviderInterface;
 use Psalm\Plugin\EventHandler\PropertyExistenceProviderInterface;
 use Psalm\Plugin\EventHandler\PropertyTypeProviderInterface;
 use Psalm\Plugin\EventHandler\PropertyVisibilityProviderInterface;
@@ -72,7 +73,9 @@ final class PluginRegistrationSocket implements RegistrationInterface
             $this->codebase->methods->visibility_provider->registerClass($handler);
         }
 
-        if (is_subclass_of($handler, MethodReturnTypeProviderInterface::class)) {
+        if (is_subclass_of($handler, MethodReturnTypeProviderInterface::class)
+            || is_subclass_of($handler, MixedMethodReturnTypeProviderInterface::class)
+        ) {
             $this->codebase->methods->return_type_provider->registerClass($handler);
         }
 

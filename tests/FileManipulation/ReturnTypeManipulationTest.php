@@ -125,7 +125,7 @@ final class ReturnTypeManipulationTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     /**
-                     * @return null|string
+                     * @return string|null
                      *
                      * @psalm-return \'hello\'|null
                      */
@@ -133,6 +133,40 @@ final class ReturnTypeManipulationTest extends FileManipulationTestCase
                         return rand(0, 1) ? "hello" : null;
                     }',
                 'php_version' => '7.0',
+                'issues_to_fix' => ['InvalidNullableReturnType'],
+                'safe_types' => true,
+            ],
+            'fixInvalidNullableReturnTypeWithNullLast' => [
+                'input' => '<?php
+                    /** @return string some notes */
+                    function foo(?string $value): string {
+                        return $value;
+                    }',
+                'output' => '<?php
+                    /**
+                     * @return string|null some notes
+                     */
+                    function foo(?string $value): string|null {
+                        return $value;
+                    }',
+                'php_version' => '8.0',
+                'issues_to_fix' => ['InvalidNullableReturnType'],
+                'safe_types' => true,
+            ],
+            'fixInvalidNullableUnionReturnTypeWithConsistentOrder' => [
+                'input' => '<?php
+                    /** @return int|string some notes */
+                    function foo(int|string|null $value): int|string {
+                        return $value;
+                    }',
+                'output' => '<?php
+                    /**
+                     * @return int|string|null some notes
+                     */
+                    function foo(int|string|null $value): int|string|null {
+                        return $value;
+                    }',
+                'php_version' => '8.0',
                 'issues_to_fix' => ['InvalidNullableReturnType'],
                 'safe_types' => true,
             ],

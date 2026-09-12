@@ -8,9 +8,11 @@ use Override;
 use Psalm\Plugin\EventHandler\Event\MethodExistenceProviderEvent;
 use Psalm\Plugin\EventHandler\Event\MethodParamsProviderEvent;
 use Psalm\Plugin\EventHandler\Event\MethodReturnTypeProviderEvent;
+use Psalm\Plugin\EventHandler\Event\MixedMethodReturnTypeProviderEvent;
 use Psalm\Plugin\EventHandler\MethodExistenceProviderInterface;
 use Psalm\Plugin\EventHandler\MethodParamsProviderInterface;
 use Psalm\Plugin\EventHandler\MethodReturnTypeProviderInterface;
+use Psalm\Plugin\EventHandler\MixedMethodReturnTypeProviderInterface;
 use Psalm\Storage\FunctionLikeParameter;
 use Psalm\Type;
 use Psalm\Type\Atomic\TNamedObject;
@@ -19,7 +21,8 @@ use Psalm\Type\Union;
 final class FooMethodProvider implements
     MethodExistenceProviderInterface,
     MethodParamsProviderInterface,
-    MethodReturnTypeProviderInterface
+    MethodReturnTypeProviderInterface,
+    MixedMethodReturnTypeProviderInterface
 {
     /**
      * @return array<string>
@@ -28,7 +31,7 @@ final class FooMethodProvider implements
     #[Override]
     public static function getClassLikeNames(): array
     {
-        return ['Ns\Foo'];
+        return ['Ns\Base', 'Ns\Foo'];
     }
 
     /**
@@ -63,10 +66,18 @@ final class FooMethodProvider implements
     public static function getMethodReturnType(MethodReturnTypeProviderEvent $event): ?Union
     {
         $method_name_lowercase = $event->getMethodNameLowercase();
-        if ($method_name_lowercase === 'magicmethod') {
+        if ($method_name_lowercase === 'magicmethod'
+            || ($method_name_lowercase === 'provided' && $event->getFqClasslikeName() === 'Ns\Base')
+        ) {
             return Type::getString();
         } else {
             return new Union([new TNamedObject('NS\\Foo2')]);
         }
+    }
+
+    #[Override]
+    public static function getMixedMethodReturnType(MixedMethodReturnTypeProviderEvent $event): ?Union
+    {
+        return $event->getMethodNameLowercase() === 'frommixed' ? Type::getString() : null;
     }
 }
