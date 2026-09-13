@@ -15,6 +15,7 @@ use Psalm\Internal\Analyzer\InferredThrowsBuffer;
 use Psalm\Internal\Analyzer\StatementsAnalyzer;
 use Psalm\Internal\Analyzer\ThrownExceptionOrigin;
 use Psalm\Internal\Clause;
+use Psalm\Internal\MethodIdentifier;
 use Psalm\Internal\ReferenceConstraint;
 use Psalm\Internal\Scope\CaseScope;
 use Psalm\Internal\Scope\FinallyScope;
@@ -31,6 +32,7 @@ use Psalm\Type\Atomic\TIntRange;
 use Psalm\Type\Atomic\TNull;
 use Psalm\Type\Union;
 use RuntimeException;
+use UnexpectedValueException;
 
 use function array_key_exists;
 use function array_keys;
@@ -983,11 +985,17 @@ final class Context
         // Record calls even when their current summary is empty: an unselected
         // implementation may throw exceptions that are absent from its docblock.
         if ($function_storage->stmt_location !== null) {
+            $caller_offset = $codelocation->raw_file_start;
+            if ($statements_analyzer !== null
+                && !$statements_analyzer->getCodebase()->config->show_inferred_throws
+            ) {
+                $caller_offset = $this->getThrowsCallerOffset($statements_analyzer, $caller_offset);
+            }
             InferredThrowsBuffer::addDependency(
                 $function_storage->stmt_location->file_path,
                 $function_storage->stmt_location->raw_file_start,
                 $codelocation->file_path,
-                $codelocation->raw_file_start,
+                $caller_offset,
             );
         }
         // Project summaries must come from their implementation: their PHPDoc
@@ -1013,6 +1021,31 @@ final class Context
             $args,
             $statements_analyzer,
         );
+    }
+
+    /** @psalm-external-mutation-free */
+    private function getThrowsCallerOffset(StatementsAnalyzer $statements_analyzer, int $fallback): int
+    {
+        try {
+            if ($this->calling_method_id !== null) {
+                $storage = $statements_analyzer->getCodebase()->methods->getStorage(
+                    MethodIdentifier::fromMethodIdReference($this->calling_method_id),
+                );
+            } elseif ($this->calling_function_id !== null) {
+                /** @var non-empty-lowercase-string $function_id */
+                $function_id = $this->calling_function_id;
+                $storage = $statements_analyzer->getCodebase()->functions->getStorage(
+                    $statements_analyzer,
+                    $function_id,
+                );
+            } else {
+                return $fallback;
+            }
+        } catch (InvalidArgumentException|UnexpectedValueException) {
+            return $fallback;
+        }
+
+        return $storage->stmt_location?->raw_file_start ?? $fallback;
     }
 
     /**

@@ -141,17 +141,24 @@ final class InferredThrowsBuffer
      * @param array<string, list<array<int, bool|int|string|null>>> $conditions
      * @psalm-external-mutation-free
      */
-    public static function set(string $function_id, array $throws, array $conditions = []): void
-    {
+    public static function set(
+        string $function_id,
+        array $throws,
+        array $conditions = [],
+        bool $preserve_analysis_context = false,
+    ): void {
         $function_id = strtolower($function_id);
         self::$inferred_throws[$function_id] = $throws + (self::$inferred_throws[$function_id] ?? []);
-        $file = self::$analysis_file ?? '';
-        self::$context_summaries[$function_id][$file] = $throws + (self::$context_summaries[$function_id][$file] ?? []);
         self::$conditions[$function_id] = self::mergeConditions(self::$conditions[$function_id] ?? [], $conditions);
-        self::$context_conditions[$function_id][$file] = self::mergeConditions(
-            self::$context_conditions[$function_id][$file] ?? [],
-            $conditions,
-        );
+        if ($preserve_analysis_context) {
+            $file = self::$analysis_file ?? '';
+            self::$context_summaries[$function_id][$file] =
+                $throws + (self::$context_summaries[$function_id][$file] ?? []);
+            self::$context_conditions[$function_id][$file] = self::mergeConditions(
+                self::$context_conditions[$function_id][$file] ?? [],
+                $conditions,
+            );
+        }
     }
 
     /**

@@ -345,6 +345,7 @@ final class Psalter
 
         if (array_key_exists('show-inferred-throws', $options)) {
             $config->check_for_throws_docblock = true;
+            $config->show_inferred_throws = true;
         }
 
         self::configureChangedScope($options, $project_analyzer, $current_dir, $paths_to_check);

@@ -231,6 +231,9 @@ final class Config
 
     public bool $array_cache = true;
 
+    /** @internal */
+    public bool $show_inferred_throws = false;
+
     private bool $cache_directory_initialized = false;
 
     /**

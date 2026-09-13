@@ -855,6 +855,9 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                 $this->getId(),
                 $inferred_throws,
                 self::getThrowsConditions($context, $uncaught_throws),
+                $storage instanceof MethodStorage
+                    && $storage->defining_fqcln !== null
+                    && $codebase->classlike_storage_provider->get($storage->defining_fqcln)->is_trait,
             );
         }
         $missingThrowsDocblockExceptions = [];

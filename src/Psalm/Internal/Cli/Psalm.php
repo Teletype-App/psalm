@@ -392,6 +392,7 @@ final class Psalm
 
         if (array_key_exists('show-inferred-throws', $options)) {
             $config->check_for_throws_docblock = true;
+            $config->show_inferred_throws = true;
         }
 
         if ($config->run_taint_analysis || $run_taint_analysis) {
