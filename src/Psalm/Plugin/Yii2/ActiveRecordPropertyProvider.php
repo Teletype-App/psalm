@@ -19,9 +19,12 @@ use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Plugin\EventHandler\AfterCodebasePopulatedInterface;
 use Psalm\Plugin\EventHandler\Event\AfterCodebasePopulatedEvent;
 use Psalm\Plugin\EventHandler\Event\PropertyExistenceProviderEvent;
+use Psalm\Plugin\EventHandler\Event\PropertyThrowsProviderEvent;
 use Psalm\Plugin\EventHandler\Event\PropertyTypeProviderEvent;
 use Psalm\Plugin\EventHandler\Event\PropertyVisibilityProviderEvent;
+use Psalm\Plugin\EventHandler\MethodThrowsProviderResult;
 use Psalm\Plugin\EventHandler\PropertyExistenceProviderInterface;
+use Psalm\Plugin\EventHandler\PropertyThrowsProviderInterface;
 use Psalm\Plugin\EventHandler\PropertyTypeProviderInterface;
 use Psalm\Plugin\EventHandler\PropertyVisibilityProviderInterface;
 use Psalm\Storage\ClassLikeStorage;
@@ -33,6 +36,7 @@ use Psalm\Type\Atomic\TNull;
 use Psalm\Type\Union;
 
 use function array_key_exists;
+use function count;
 use function str_contains;
 use function strtolower;
 use function substr;
@@ -41,6 +45,7 @@ final class ActiveRecordPropertyProvider implements
     AfterCodebasePopulatedInterface,
     PropertyExistenceProviderInterface,
     PropertyTypeProviderInterface,
+    PropertyThrowsProviderInterface,
     PropertyVisibilityProviderInterface
 {
     /** @var array<lowercase-string, true> */
@@ -88,6 +93,10 @@ final class ActiveRecordPropertyProvider implements
                 $storage->name,
                 self::getPropertyType(...),
             );
+            $codebase->properties->property_throws_provider->registerClosure(
+                $storage->name,
+                self::getPropertyThrows(...),
+            );
             $codebase->properties->property_visibility_provider->registerClosure(
                 $storage->name,
                 self::isPropertyVisible(...),
@@ -118,14 +127,49 @@ final class ActiveRecordPropertyProvider implements
     }
 
     #[Override]
-    public static function isPropertyVisible(PropertyVisibilityProviderEvent $event): ?bool
+    public static function getPropertyThrows(PropertyThrowsProviderEvent $event): ?MethodThrowsProviderResult
     {
-        return self::getMagicPropertyType(
-            $event->getSource()->getCodebase(),
+        $codebase = $event->getSource()->getCodebase();
+        $method = self::getMagicPropertyMethod(
+            $codebase,
             $event->getFqClasslikeName(),
             $event->getPropertyName(),
             $event->isReadMode(),
-        ) !== null ?: null;
+        );
+        if ($method === null) {
+            return null;
+        }
+
+        [$method_id, $method_storage, $declaring_class_storage] = $method;
+        $targets = [$method_id];
+        if ($event->isReadMode()) {
+            $relation = self::getRelationDefinition($codebase, $declaring_class_storage, $method_storage);
+            if ($relation !== null) {
+                $targets[] = new MethodIdentifier(
+                    'yii\\db\\Command',
+                    $relation[0] ? 'queryall' : 'queryone',
+                );
+            }
+        }
+
+        return new MethodThrowsProviderResult($targets);
+    }
+
+    #[Override]
+    public static function isPropertyVisible(PropertyVisibilityProviderEvent $event): ?bool
+    {
+        $codebase = $event->getSource()->getCodebase();
+        return (self::getMagicPropertyMethod(
+            $codebase,
+            $event->getFqClasslikeName(),
+            $event->getPropertyName(),
+            $event->isReadMode(),
+        ) ?? self::getMagicPropertyMethod(
+            $codebase,
+            $event->getFqClasslikeName(),
+            $event->getPropertyName(),
+            !$event->isReadMode(),
+        )) !== null ?: null;
     }
 
     private static function getMagicPropertyType(
@@ -134,34 +178,21 @@ final class ActiveRecordPropertyProvider implements
         string $property_name,
         bool $read_mode,
     ): ?Union {
-        if ($codebase === null || !$read_mode) {
+        if ($codebase === null) {
             return null;
         }
 
-        $class_storage = $codebase->classlike_storage_provider->get($fq_classlike_name);
-        if (isset($class_storage->declaring_property_ids[$property_name])
-            || isset($class_storage->pseudo_property_get_types['$' . $property_name])
-        ) {
+        $method = self::getMagicPropertyMethod($codebase, $fq_classlike_name, $property_name, $read_mode);
+        if ($method === null) {
             return null;
         }
 
-        $method_id = new MethodIdentifier($fq_classlike_name, strtolower('get' . $property_name));
-        $declaring_method_id = $codebase->methods->getDeclaringMethodId($method_id);
-        if ($declaring_method_id === null) {
-            return null;
+        [$method_id, $method_storage, $declaring_class_storage] = $method;
+
+        if (!$read_mode) {
+            return $method_storage->params[0]->type ?? Type::getMixed();
         }
 
-        $method_storage = $codebase->methods->getStorage($declaring_method_id);
-        if ($method_storage->is_static
-            || $method_storage->visibility !== ClassLikeAnalyzer::VISIBILITY_PUBLIC
-            || ($method_storage->required_param_count ?? 0) > 0
-        ) {
-            return null;
-        }
-
-        $declaring_class_storage = $codebase->classlike_storage_provider->get(
-            $declaring_method_id->fq_class_name,
-        );
         $relation = self::getRelationDefinition($codebase, $declaring_class_storage, $method_storage);
         if ($relation !== null) {
             [$multiple, $related_class] = $relation;
@@ -172,8 +203,54 @@ final class ActiveRecordPropertyProvider implements
                 : new Union([new TNamedObject($related_class), new TNull()]);
         }
 
-        $self_class = $declaring_method_id->fq_class_name;
+        $self_class = $method_id->fq_class_name;
         return $codebase->getMethodReturnType($method_id, $self_class);
+    }
+
+    /**
+     * @return array{MethodIdentifier, MethodStorage, ClassLikeStorage}|null
+     * @psalm-mutation-free
+     */
+    private static function getMagicPropertyMethod(
+        Codebase $codebase,
+        string $fq_classlike_name,
+        string $property_name,
+        bool $read_mode,
+    ): ?array {
+
+        $class_storage = $codebase->classlike_storage_provider->get($fq_classlike_name);
+        if (isset($class_storage->declaring_property_ids[$property_name])
+            || isset(($read_mode
+                ? $class_storage->pseudo_property_get_types
+                : $class_storage->pseudo_property_set_types)['$' . $property_name])
+        ) {
+            return null;
+        }
+
+        $method_id = new MethodIdentifier(
+            $fq_classlike_name,
+            strtolower(($read_mode ? 'get' : 'set') . $property_name),
+        );
+        $declaring_method_id = $codebase->methods->getDeclaringMethodId($method_id);
+        if ($declaring_method_id === null) {
+            return null;
+        }
+
+        $method_storage = $codebase->methods->getStorage($declaring_method_id);
+        if ($method_storage->is_static
+            || $method_storage->visibility !== ClassLikeAnalyzer::VISIBILITY_PUBLIC
+            || ($read_mode && ($method_storage->required_param_count ?? 0) > 0)
+            || (!$read_mode
+                && (count($method_storage->params) < 1 || ($method_storage->required_param_count ?? 0) > 1))
+        ) {
+            return null;
+        }
+
+        $declaring_class_storage = $codebase->classlike_storage_provider->get(
+            $declaring_method_id->fq_class_name,
+        );
+
+        return [$method_id, $method_storage, $declaring_class_storage];
     }
 
     /**

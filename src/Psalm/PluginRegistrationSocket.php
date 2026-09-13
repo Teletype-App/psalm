@@ -13,9 +13,11 @@ use Psalm\Plugin\EventHandler\FunctionReturnTypeProviderInterface;
 use Psalm\Plugin\EventHandler\MethodExistenceProviderInterface;
 use Psalm\Plugin\EventHandler\MethodParamsProviderInterface;
 use Psalm\Plugin\EventHandler\MethodReturnTypeProviderInterface;
+use Psalm\Plugin\EventHandler\MethodThrowsProviderInterface;
 use Psalm\Plugin\EventHandler\MethodVisibilityProviderInterface;
 use Psalm\Plugin\EventHandler\MixedMethodReturnTypeProviderInterface;
 use Psalm\Plugin\EventHandler\PropertyExistenceProviderInterface;
+use Psalm\Plugin\EventHandler\PropertyThrowsProviderInterface;
 use Psalm\Plugin\EventHandler\PropertyTypeProviderInterface;
 use Psalm\Plugin\EventHandler\PropertyVisibilityProviderInterface;
 use Psalm\Plugin\RegistrationInterface;
@@ -65,6 +67,10 @@ final class PluginRegistrationSocket implements RegistrationInterface
             $this->codebase->properties->property_type_provider->registerClass($handler);
         }
 
+        if (is_subclass_of($handler, PropertyThrowsProviderInterface::class)) {
+            $this->codebase->properties->property_throws_provider->registerClass($handler);
+        }
+
         if (is_subclass_of($handler, MethodExistenceProviderInterface::class)) {
             $this->codebase->methods->existence_provider->registerClass($handler);
         }
@@ -81,6 +87,10 @@ final class PluginRegistrationSocket implements RegistrationInterface
 
         if (is_subclass_of($handler, MethodParamsProviderInterface::class)) {
             $this->codebase->methods->params_provider->registerClass($handler);
+        }
+
+        if (is_subclass_of($handler, MethodThrowsProviderInterface::class)) {
+            $this->codebase->methods->throws_provider->registerClass($handler);
         }
 
         if (is_subclass_of($handler, FunctionExistenceProviderInterface::class)) {

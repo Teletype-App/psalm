@@ -1057,6 +1057,18 @@ final class InstancePropertyAssignmentAnalyzer
 
         $property_id = $fq_class_name . '::$' . $prop_name;
 
+        if ($assignment_value !== null && !$context->isSuppressingExceptions($statements_analyzer)) {
+            $codebase->properties->property_throws_provider->mergePropertyThrows(
+                $statements_analyzer,
+                $fq_class_name,
+                $prop_name,
+                false,
+                $context,
+                new CodeLocation($statements_analyzer->getSource(), $stmt),
+                [new VirtualArg($assignment_value)],
+            );
+        }
+
         $has_magic_setter = false;
 
         $set_method_id = new MethodIdentifier($fq_class_name, '__set');
@@ -1289,10 +1301,24 @@ final class InstancePropertyAssignmentAnalyzer
             }
         }
 
-        $declaring_property_class = (string)$codebase->properties->getDeclaringClassForProperty(
+        $declaring_property_class = $codebase->properties->getDeclaringClassForProperty(
             $property_id,
             false,
         );
+
+        // A plugin-provided magic property has no physical PropertyStorage.
+        if ($declaring_property_class === null) {
+            return new AssignedProperty(
+                $codebase->properties->getPropertyType(
+                    $property_id,
+                    true,
+                    $statements_analyzer,
+                    $context,
+                ) ?? Type::getMixed(),
+                $property_id,
+                $assignment_value_type,
+            );
+        }
 
         self::handlePropertyRenames(
             $codebase,

@@ -261,6 +261,17 @@ final class AtomicPropertyFetchAnalyzer
             $codebase->collect_locations ? new CodeLocation($statements_analyzer->getSource(), $stmt) : null,
         );
 
+        if (!$in_assignment && !$context->isSuppressingExceptions($statements_analyzer)) {
+            $codebase->properties->property_throws_provider->mergePropertyThrows(
+                $statements_analyzer,
+                $fq_class_name,
+                $prop_name,
+                true,
+                $context,
+                new CodeLocation($statements_analyzer->getSource(), $stmt),
+            );
+        }
+
         // add method before changing fq_class_name
         $get_method_id = new MethodIdentifier($fq_class_name, '__get');
 

@@ -9,6 +9,7 @@ use Psalm\Context;
 use Psalm\Internal\Provider\ClassLikeStorageProvider;
 use Psalm\Internal\Provider\FileReferenceProvider;
 use Psalm\Internal\Provider\PropertyExistenceProvider;
+use Psalm\Internal\Provider\PropertyThrowsProvider;
 use Psalm\Internal\Provider\PropertyTypeProvider;
 use Psalm\Internal\Provider\PropertyVisibilityProvider;
 use Psalm\StatementsSource;
@@ -33,6 +34,8 @@ final class Properties
 
     public PropertyTypeProvider $property_type_provider;
 
+    public PropertyThrowsProvider $property_throws_provider;
+
     public PropertyVisibilityProvider $property_visibility_provider;
 
 
@@ -44,6 +47,7 @@ final class Properties
         $this->property_existence_provider = new PropertyExistenceProvider();
         $this->property_visibility_provider = new PropertyVisibilityProvider();
         $this->property_type_provider = new PropertyTypeProvider();
+        $this->property_throws_provider = new PropertyThrowsProvider();
     }
 
     /**

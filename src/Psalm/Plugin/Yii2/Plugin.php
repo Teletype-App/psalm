@@ -21,10 +21,11 @@ final class Plugin implements PluginEntryPointInterface
     {
         require_once __DIR__ . '/ActiveRecordReturnTypeProvider.php';
         require_once __DIR__ . '/ActiveRecordPropertyProvider.php';
+        require_once __DIR__ . '/ThrowsProvider.php';
 
         ActiveRecordPropertyProvider::reset();
-
         $registration->registerHooksFromClass(ActiveRecordReturnTypeProvider::class);
         $registration->registerHooksFromClass(ActiveRecordPropertyProvider::class);
+        $registration->registerHooksFromClass(ThrowsProvider::class);
     }
 }

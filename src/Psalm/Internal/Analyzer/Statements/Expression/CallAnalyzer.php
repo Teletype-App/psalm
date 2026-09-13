@@ -300,7 +300,9 @@ abstract class CallAnalyzer
         $class_storage = $codebase->classlike_storage_provider->get($fq_class_name);
 
         $method_storage = null;
+        $declaring_method_id = null;
         $throws_storages = [];
+        $throws_storage_ids = [];
 
         if (isset($class_storage->declaring_method_ids[$method_name])) {
             $declaring_method_id = $class_storage->declaring_method_ids[$method_name];
@@ -330,6 +332,7 @@ abstract class CallAnalyzer
 
             if (!$context->isSuppressingExceptions($statements_analyzer)) {
                 $throws_storages[] = $method_storage;
+                $throws_storage_ids[strtolower((string) $declaring_method_id)] = true;
 
                 $project_polymorphic_call = ($class_storage->is_interface || $class_storage->abstract)
                     && $class_storage->location !== null
@@ -390,6 +393,52 @@ abstract class CallAnalyzer
                 if ($declaring_class_storage->is_trait && $method_storage->inheritdoc) {
                     foreach ($codebase->methods->getOverriddenMethodIds($method_id) as $overridden_method_id) {
                         $throws_storages[] = $codebase->methods->getStorage($overridden_method_id);
+                    }
+                }
+            }
+        }
+
+        if (!$context->isSuppressingExceptions($statements_analyzer)) {
+            $provider_class = null;
+            $provider_method = $method_name;
+            $called_class = null;
+            $called_method = null;
+            if ($codebase->methods->throws_provider->has($fq_class_name)) {
+                $provider_class = $fq_class_name;
+            } elseif ($declaring_method_id !== null
+                && $codebase->methods->throws_provider->has($declaring_method_id->fq_class_name)
+            ) {
+                $provider_class = $declaring_method_id->fq_class_name;
+                $provider_method = $declaring_method_id->method_name;
+                $called_class = $fq_class_name;
+                $called_method = $method_name;
+            }
+
+            if ($provider_class !== null) {
+                $provider_result = $codebase->methods->throws_provider->getMethodThrows(
+                    $statements_analyzer,
+                    $provider_class,
+                    $provider_method,
+                    $args,
+                    $context,
+                    $code_location,
+                    $called_class,
+                    $called_method,
+                );
+                if ($provider_result !== null) {
+                    $context->throws_analysis_complete = $context->throws_analysis_complete
+                        && $provider_result->analysis_complete;
+                    foreach ($provider_result->method_ids as $throws_method_id) {
+                        $declaring_throws_method_id = $codebase->methods->getDeclaringMethodId($throws_method_id);
+                        if ($declaring_throws_method_id === null) {
+                            continue;
+                        }
+                        $storage_id = strtolower((string) $declaring_throws_method_id);
+                        if (isset($throws_storage_ids[$storage_id])) {
+                            continue;
+                        }
+                        $throws_storage_ids[$storage_id] = true;
+                        $throws_storages[] = $codebase->methods->getStorage($declaring_throws_method_id);
                     }
                 }
             }
