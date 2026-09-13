@@ -74,6 +74,10 @@ final class ThrowsProvider implements MethodThrowsProviderInterface, AfterClassL
             );
         }
 
+        if ($method === 'setattributes') {
+            return self::getSetAttributesTargets($event, $called_class);
+        }
+
         $hooks = match ($method) {
             '__construct' => ['init'],
             'validate' => [
@@ -97,6 +101,11 @@ final class ThrowsProvider implements MethodThrowsProviderInterface, AfterClassL
         }
 
         $targets = self::resolveProjectMethods($event, $called_class, $hooks);
+        if ($method === 'validate'
+            || (in_array($method, ['save', 'insert', 'update'], true) && self::runsValidation($event))
+        ) {
+            $targets = [...$targets, ...self::validatorCallbackTargets($event, $called_class)];
+        }
         $query_target = self::databaseExecutionTarget($event, $method);
         if ($query_target !== null) {
             $targets[] = $query_target;
@@ -108,14 +117,19 @@ final class ThrowsProvider implements MethodThrowsProviderInterface, AfterClassL
     /** @return list<string> */
     private static function validationMethods(MethodThrowsProviderEvent $event, string $called_class): array
     {
-        $first_arg = $event->getCallArgs()[0]->value ?? null;
-        if ($first_arg instanceof Node\Expr\ConstFetch
-            && strtolower($first_arg->name->toString()) === 'false'
-        ) {
+        if (!self::runsValidation($event)) {
             return [];
         }
 
         return ['beforeValidate', ...self::validatorMethods($event, $called_class), 'afterValidate'];
+    }
+
+    /** @psalm-mutation-free */
+    private static function runsValidation(MethodThrowsProviderEvent $event): bool
+    {
+        $first_arg = $event->getCallArgs()[0]->value ?? null;
+        return !$first_arg instanceof Node\Expr\ConstFetch
+            || strtolower($first_arg->name->toString()) !== 'false';
     }
 
     private static function databaseExecutionTarget(
@@ -165,6 +179,107 @@ final class ThrowsProvider implements MethodThrowsProviderInterface, AfterClassL
         }
 
         return array_values($methods);
+    }
+
+    /** @return list<MethodIdentifier> */
+    private static function validatorCallbackTargets(
+        MethodThrowsProviderEvent $event,
+        string $called_class,
+    ): array {
+        $codebase = $event->getSource()->getCodebase();
+        if (!$codebase->classOrInterfaceExists($called_class)) {
+            return [];
+        }
+
+        $storage = $codebase->classlike_storage_provider->get($called_class);
+        $classes = [$storage->name, ...array_keys($storage->parent_classes)];
+        $targets = [];
+        foreach ($classes as $class) {
+            $class_storage = $codebase->classlike_storage_provider->get($class);
+            $callbacks = $class_storage->custom_metadata['yii_validator_callbacks'] ?? [];
+            if (!is_array($callbacks)) {
+                continue;
+            }
+            foreach ($callbacks as $callback) {
+                if (!is_array($callback)
+                    || !isset($callback['class'], $callback['method'])
+                    || !is_string($callback['class'])
+                    || !is_string($callback['method'])
+                    || !$codebase->classOrInterfaceExists($callback['class'])
+                ) {
+                    continue;
+                }
+
+                $callback_storage = $codebase->classlike_storage_provider->get($callback['class']);
+                $method_id = $callback_storage->declaring_method_ids[strtolower($callback['method'])] ?? null;
+                if ($method_id === null) {
+                    continue;
+                }
+                $targets[strtolower((string) $method_id)] = $method_id;
+            }
+        }
+
+        return array_values($targets);
+    }
+
+    private static function getSetAttributesTargets(
+        MethodThrowsProviderEvent $event,
+        string $called_class,
+    ): MethodThrowsProviderResult {
+        $args = $event->getCallArgs();
+        $values = $args[0]->value ?? null;
+        $safe_only = $args[1]->value ?? null;
+        if (!$values instanceof Node\Expr\Array_
+            || !$safe_only instanceof Node\Expr\ConstFetch
+            || strtolower($safe_only->name->toString()) !== 'false'
+        ) {
+            return new MethodThrowsProviderResult([]);
+        }
+
+        $codebase = $event->getSource()->getCodebase();
+        if (!$codebase->classOrInterfaceExists($called_class)) {
+            return new MethodThrowsProviderResult([]);
+        }
+        $storage = $codebase->classlike_storage_provider->get($called_class);
+        $setters = [];
+        foreach ($values->items as $item) {
+            if ($item === null || !$item->key instanceof Node\Scalar\String_) {
+                continue;
+            }
+            $property = $item->key->value;
+            if ($property === '' || isset($storage->declaring_property_ids[$property])) {
+                continue;
+            }
+            $setters[] = 'set' . $property;
+        }
+
+        return new MethodThrowsProviderResult(self::resolveKnownMethods($event, $called_class, $setters));
+    }
+
+    /**
+     * @param list<string> $methods
+     * @return list<MethodIdentifier>
+     */
+    private static function resolveKnownMethods(
+        MethodThrowsProviderEvent $event,
+        string $class,
+        array $methods,
+    ): array {
+        $codebase = $event->getSource()->getCodebase();
+        if (!$codebase->classOrInterfaceExists($class)) {
+            return [];
+        }
+
+        $storage = $codebase->classlike_storage_provider->get($class);
+        $result = [];
+        foreach ($methods as $method) {
+            $method_id = $storage->declaring_method_ids[strtolower($method)] ?? null;
+            if ($method_id !== null) {
+                $result[strtolower((string) $method_id)] = $method_id;
+            }
+        }
+
+        return array_values($result);
     }
 
     /**
@@ -331,6 +446,15 @@ final class ThrowsProvider implements MethodThrowsProviderInterface, AfterClassL
 
             $arrays = (new NodeFinder())->findInstanceOf($stmt->stmts ?? [], Node\Expr\Array_::class);
             foreach ($arrays as $array) {
+                $callback = self::callbackMethod($array, $storage);
+                if ($callback !== null && $event->getCodebase()->classOrInterfaceExists($callback->fq_class_name)) {
+                    $storage->custom_metadata['yii_validator_callbacks'][strtolower((string) $callback)] = [
+                        'class' => $callback->fq_class_name,
+                        'method' => $callback->method_name,
+                    ];
+                    continue;
+                }
+
                 $position = 0;
                 foreach ($array->items as $item) {
                     if ($item === null || $item->key !== null) {

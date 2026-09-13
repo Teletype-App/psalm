@@ -10,7 +10,7 @@ use Psalm\Plugin\RegistrationInterface;
 use SimpleXMLElement;
 
 /**
- * Yii 2 ActiveRecord type support.
+ * Yii 2 dynamic type and throws support.
  *
  * Enable with `<pluginClass class="Psalm\Plugin\Yii2\Plugin"/>` in Psalm's `plugins` config section.
  */

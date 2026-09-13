@@ -402,7 +402,8 @@ final class Yii2PluginTest extends TestCase
 
             namespace yii\base {
                 class Component {
-                    public function __get(string $name): mixed { return null; }
+                    /** @return mixed */
+                    public function __get(string $name) { return null; }
                 }
             }
 
@@ -454,6 +455,62 @@ final class Yii2PluginTest extends TestCase
             PHP);
     }
 
+    public function testComponentMagicGetterThrowsPropagate(): void
+    {
+        $this->expectException(CodeException::class);
+        $this->expectExceptionMessage('DomainException is thrown but not caught');
+        $this->testConfig->check_for_throws_docblock = true;
+
+        $this->analyzeYiiFile(<<<'PHP'
+            <?php
+
+            namespace yii\base {
+                class Component {
+                    /** @return mixed */
+                    public function __get(string $name) { return null; }
+                }
+            }
+
+            namespace app {
+                /** @property-read string $token */
+                final class Service extends \yii\base\Component {
+                    /** @throws \DomainException */
+                    public function getToken(): string { throw new \DomainException(); }
+                }
+
+                function consume(Service $service): void { echo $service->token; }
+            }
+            PHP);
+    }
+
+    public function testComponentMagicSetterThrowsPropagate(): void
+    {
+        $this->expectException(CodeException::class);
+        $this->expectExceptionMessage('LengthException is thrown but not caught');
+        $this->testConfig->check_for_throws_docblock = true;
+
+        $this->analyzeYiiFile(<<<'PHP'
+            <?php
+
+            namespace yii\base {
+                class Component {
+                    /** @param mixed $value */
+                    public function __set(string $name, $value): void {}
+                }
+            }
+
+            namespace app {
+                /** @property-write string $token */
+                final class Service extends \yii\base\Component {
+                    /** @throws \LengthException */
+                    public function setToken(string $token): void { throw new \LengthException(); }
+                }
+
+                function configure(Service $service): void { $service->token = 'secret'; }
+            }
+            PHP);
+    }
+
     public function testActiveRecordRelationPropertyPropagatesDatabaseException(): void
     {
         $this->expectException(CodeException::class);
@@ -491,6 +548,7 @@ final class Yii2PluginTest extends TestCase
             namespace app {
                 final class Author extends \yii\db\ActiveRecord {}
 
+                /** @property-read Author|null $author */
                 final class Post extends \yii\db\ActiveRecord {
                     public function getAuthor(): \yii\db\ActiveQuery {
                         return $this->hasOne(Author::class, ['id' => 'author_id']);
@@ -565,6 +623,97 @@ final class Yii2PluginTest extends TestCase
                 }
 
                 function submit(Form $form): void { $form->validate(); }
+            }
+            PHP);
+    }
+
+    public function testStaticCallableValidatorOptionThrowsPropagateThroughValidate(): void
+    {
+        $this->expectException(CodeException::class);
+        $this->expectExceptionMessage('UnexpectedValueException is thrown but not caught');
+        $this->testConfig->check_for_throws_docblock = true;
+
+        $this->analyzeYiiFile(<<<'PHP'
+            <?php
+
+            namespace yii\base {
+                class Model {
+                    public function rules(): array { return []; }
+                    public function validate(): bool { return true; }
+                    public function beforeValidate(): bool { return true; }
+                    public function afterValidate(): void {}
+                }
+            }
+
+            namespace app {
+                final class EmailFilter {
+                    /** @throws \UnexpectedValueException */
+                    public static function apply(string $value): string {
+                        throw new \UnexpectedValueException();
+                    }
+                }
+
+                final class Form extends \yii\base\Model {
+                    public function rules(): array {
+                        return [[['email'], 'filter', 'filter' => [EmailFilter::class, 'apply']]];
+                    }
+                }
+
+                function submit(Form $form): void { $form->validate(); }
+            }
+            PHP);
+    }
+
+    public function testLiteralUnsafeSetAttributesPropagatesMagicSetterThrows(): void
+    {
+        $this->expectException(CodeException::class);
+        $this->expectExceptionMessage('RangeException is thrown but not caught');
+        $this->testConfig->check_for_throws_docblock = true;
+
+        $this->analyzeYiiFile(<<<'PHP'
+            <?php
+
+            namespace yii\base {
+                class Model {
+                    public function setAttributes(array $values, bool $safeOnly = true): void {}
+                }
+            }
+
+            namespace app {
+                final class Form extends \yii\base\Model {
+                    /** @throws \RangeException */
+                    public function setSecret(string $secret): void { throw new \RangeException(); }
+                }
+
+                function hydrate(Form $form): void {
+                    $form->setAttributes(['secret' => 'value'], false);
+                }
+            }
+            PHP);
+    }
+
+    public function testSafeSetAttributesDoesNotGuessMagicSetterTargets(): void
+    {
+        $this->testConfig->check_for_throws_docblock = true;
+
+        $this->analyzeYiiFile(<<<'PHP'
+            <?php
+
+            namespace yii\base {
+                class Model {
+                    public function setAttributes(array $values, bool $safeOnly = true): void {}
+                }
+            }
+
+            namespace app {
+                final class Form extends \yii\base\Model {
+                    /** @throws \RangeException */
+                    public function setSecret(string $secret): void { throw new \RangeException(); }
+                }
+
+                function hydrate(Form $form, array $input): void {
+                    $form->setAttributes($input);
+                }
             }
             PHP);
     }

@@ -80,7 +80,7 @@ final class ActiveRecordPropertyProvider implements
 
         foreach (ClassLikeStorageProvider::getAll() as $storage) {
             $class_name_lc = strtolower($storage->name);
-            if (isset(self::$registered_classes[$class_name_lc]) || !self::isActiveRecord($storage)) {
+            if (isset(self::$registered_classes[$class_name_lc]) || !self::isYiiComponent($storage)) {
                 continue;
             }
 
@@ -135,6 +135,7 @@ final class ActiveRecordPropertyProvider implements
             $event->getFqClasslikeName(),
             $event->getPropertyName(),
             $event->isReadMode(),
+            false,
         );
         if ($method === null) {
             return null;
@@ -216,13 +217,14 @@ final class ActiveRecordPropertyProvider implements
         string $fq_classlike_name,
         string $property_name,
         bool $read_mode,
+        bool $respect_pseudo_property = true,
     ): ?array {
 
         $class_storage = $codebase->classlike_storage_provider->get($fq_classlike_name);
         if (isset($class_storage->declaring_property_ids[$property_name])
-            || isset(($read_mode
+            || ($respect_pseudo_property && isset(($read_mode
                 ? $class_storage->pseudo_property_get_types
-                : $class_storage->pseudo_property_set_types)['$' . $property_name])
+                : $class_storage->pseudo_property_set_types)['$' . $property_name]))
         ) {
             return null;
         }
@@ -328,10 +330,10 @@ final class ActiveRecordPropertyProvider implements
     }
 
     /** @psalm-mutation-free */
-    private static function isActiveRecord(ClassLikeStorage $storage): bool
+    private static function isYiiComponent(ClassLikeStorage $storage): bool
     {
         $name_lc = strtolower($storage->name);
-        return $name_lc === 'yii\\db\\activerecord'
-            || isset($storage->parent_classes['yii\\db\\activerecord']);
+        return $name_lc === 'yii\\base\\component'
+            || isset($storage->parent_classes['yii\\base\\component']);
     }
 }
