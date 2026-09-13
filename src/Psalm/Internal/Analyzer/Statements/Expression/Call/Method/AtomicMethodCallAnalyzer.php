@@ -239,6 +239,41 @@ final class AtomicMethodCallAnalyzer extends CallAnalyzer
                 return;
             }
 
+            $method_name_type = $statements_analyzer->node_data->getType($stmt->name);
+            $literal_method_names = $method_name_type?->getLiteralStrings() ?? [];
+            if ($method_name_type !== null
+                && $literal_method_names !== []
+                && count($literal_method_names) === count($method_name_type->getAtomicTypes())
+            ) {
+                foreach ($literal_method_names as $literal_method_name) {
+                    $literal_method_id = new MethodIdentifier(
+                        $fq_class_name,
+                        strtolower($literal_method_name->value),
+                    );
+                    if ($codebase->methodExists(
+                        $literal_method_id,
+                        $context->calling_method_id,
+                        null,
+                        $statements_analyzer,
+                        $statements_analyzer->getFilePath(),
+                        false,
+                        $context->insideUse(),
+                    )) {
+                        CallAnalyzer::checkMethodArgs(
+                            $literal_method_id,
+                            $stmt->getArgs(),
+                            $inferred_template_result ?? new TemplateResult([], []),
+                            $context,
+                            new CodeLocation($source, $stmt),
+                            $statements_analyzer,
+                        );
+                    }
+                }
+
+                $result->return_type = Type::getMixed();
+                return;
+            }
+
             ArgumentsAnalyzer::analyze(
                 $statements_analyzer,
                 $stmt->getArgs(),

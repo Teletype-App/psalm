@@ -36,6 +36,8 @@ final class TClosure extends TNamedObject
      * @param array<string, bool> $byref_uses
      * @param Mutations::LEVEL_* $allowed_mutations
      * @param array<string, TNamedObject|TTemplateParam|TIterable|TObjectWithProperties|TCallableObject> $extra_types
+     * @param array<string, true> $inferred_throws
+     * @param array<string, list<array<int, bool|int|string|null>>> $inferred_throws_conditions
      */
     public function __construct(
         ?array $params = null,
@@ -44,6 +46,9 @@ final class TClosure extends TNamedObject
         public array $byref_uses = [],
         array $extra_types = [],
         bool $from_docblock = false,
+        public array $inferred_throws = [],
+        public array $inferred_throws_conditions = [],
+        public bool $throws_analysis_complete = true,
     ) {
         $this->params = $params;
         $this->return_type = $return_type;
@@ -85,6 +90,10 @@ final class TClosure extends TNamedObject
             $this->allowed_mutations,
             $this->byref_uses,
             $intersection ?? $this->extra_types,
+            $this->from_docblock,
+            $this->inferred_throws,
+            $this->inferred_throws_conditions,
+            $this->throws_analysis_complete,
         );
     }
 
@@ -137,6 +146,10 @@ final class TClosure extends TNamedObject
             $this->allowed_mutations,
             $this->byref_uses,
             $intersection ?? $this->extra_types,
+            $this->from_docblock,
+            $this->inferred_throws,
+            $this->inferred_throws_conditions,
+            $this->throws_analysis_complete,
         );
     }
 

@@ -300,7 +300,9 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
             'resolveLiteralContainerGetFromPseudoProperty' => [
                 'input' => '<?php
                     final class Gateway {
-                        /** @throws DomainException */
+                        /**
+                         * @throws DomainException
+                         */
                         public function dispatch(): void {
                             throw new DomainException();
                         }
@@ -321,7 +323,9 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'output' => '<?php
                     final class Gateway {
-                        /** @throws DomainException */
+                        /**
+                         * @throws DomainException
+                         */
                         public function dispatch(): void {
                             throw new DomainException();
                         }
@@ -381,6 +385,33 @@ final class ThrowsBlockAdditionTest extends FileManipulationTestCase
                     }',
                 'php_version' => '7.4',
                 'issues_to_fix' => ['MissingThrowsDocblock'],
+                'safe_types' => true,
+            ],
+            'addThrowFromInvokedClosureVariable' => [
+                'input' => '<?php
+                    final class Worker {
+                        /** @throws Throwable */
+                        public function run(): void {
+                            $callback = static function (): void {
+                                throw new DomainException();
+                            };
+                            $callback();
+                        }
+                    }',
+                'output' => '<?php
+                    final class Worker {
+                        /**
+                         * @throws DomainException
+                         */
+                        public function run(): void {
+                            $callback = static function (): void {
+                                throw new DomainException();
+                            };
+                            $callback();
+                        }
+                    }',
+                'php_version' => '8.3',
+                'issues_to_fix' => ['MissingThrowsDocblock', 'OverlyBroadThrowsDocblock', 'UnusedThrowsDocblock'],
                 'safe_types' => true,
             ],
             'doNotAddThrowFromNativeDeferredCallback' => [

@@ -700,6 +700,163 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertSame(1, substr_count($contents, '@throws RuntimeException'));
     }
 
+    public function testPsalterPropagatesConcreteAndDynamicThrowsEffects(): void
+    {
+        $this->runPsalmInit();
+        $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
+        $psalmXml = str_replace(
+            '<psalm',
+            '<psalm checkForThrowsDocblock="true" runTaintAnalysis="false"',
+            (string) $psalmXml,
+        );
+        file_put_contents(self::$tmpDir . '/psalm.xml', $psalmXml);
+
+        $file = self::$tmpDir . '/src/FileWithErrors.php';
+        file_put_contents(
+            $file,
+            <<<'PHP'
+                <?php
+
+                interface Gateway
+                {
+                    public function dispatch(): void;
+                }
+
+                interface UnresolvedGateway
+                {
+                    public function dispatch(): void;
+                }
+
+                final class FirstGateway implements Gateway
+                {
+                    public function dispatch(): void
+                    {
+                        throw new DomainException();
+                    }
+                }
+
+                final class SecondGateway implements Gateway
+                {
+                    public function dispatch(): void
+                    {
+                        throw new RuntimeException();
+                    }
+                }
+
+                final class ConditionalGateway
+                {
+                    public static function find(string $class, int $id, bool $raise): void
+                    {
+                        if ($raise) {
+                            throw new UnexpectedValueException();
+                        }
+                    }
+                }
+
+                trait FindsModels
+                {
+                    /** @throws UnexpectedValueException */
+                    public static function find(bool $raise = true): void
+                    {
+                        ConditionalGateway::find(self::class, 1, $raise);
+                    }
+                }
+
+                final class ClosureTarget
+                {
+                    public function dispatch(): void
+                    {
+                        throw new LogicException();
+                    }
+                }
+
+                final class Worker
+                {
+                    use FindsModels;
+
+                    /** @throws UnexpectedValueException */
+                    public function callTrait(): void
+                    {
+                        self::find(true);
+                    }
+
+                    /** @throws Throwable */
+                    public function run(Gateway $gateway, bool $first): void
+                    {
+                        $callback = static function (): void {
+                            (new ClosureTarget())->dispatch();
+                        };
+                        $callback();
+
+                        $method = $first ? 'first' : 'second';
+                        $this->$method();
+                        $gateway->dispatch();
+                    }
+
+                    private function first(): void
+                    {
+                        throw new OverflowException();
+                    }
+
+                    private function second(): void
+                    {
+                        throw new UnderflowException();
+                    }
+                }
+
+                final class UnresolvedWorker
+                {
+                    /** @throws LengthException */
+                    public function run(UnresolvedGateway $gateway): void
+                    {
+                        $gateway->dispatch();
+                    }
+                }
+
+                final class UnresolvedCaller
+                {
+                    /** @throws Throwable */
+                    public function run(UnresolvedWorker $worker, UnresolvedGateway $gateway): void
+                    {
+                        $worker->run($gateway);
+                    }
+                }
+
+                final class ClosureBoundary
+                {
+                    /** @throws RangeException */
+                    public function run(UnresolvedGateway $gateway): void
+                    {
+                        $callback = static function () use ($gateway): void {
+                            $gateway->dispatch();
+                        };
+                        $callback();
+                    }
+                }
+                PHP,
+        );
+
+        $process = new Process([
+            PHP_BINARY,
+            $this->psalter,
+            '--issues=MissingThrowsDocblock,OverlyBroadThrowsDocblock,UnusedThrowsDocblock',
+            '--no-progress',
+            $file,
+        ], self::$tmpDir);
+        $process->run();
+
+        $contents = (string) file_get_contents($file);
+        $this->assertStringNotContainsString('@throws Throwable', $contents);
+        $this->assertMatchesRegularExpression(
+            '/@throws DomainException.*@throws LogicException.*@throws OverflowException'
+                . '.*@throws RuntimeException.*@throws UnderflowException.*public function run/s',
+            $contents,
+        );
+        $this->assertSame(3, substr_count($contents, '@throws UnexpectedValueException'), $contents);
+        $this->assertSame(2, substr_count($contents, '@throws LengthException'), $contents);
+        $this->assertSame(1, substr_count($contents, '@throws RangeException'), $contents);
+    }
+
     public function testInit(): void
     {
         $this->assertStringStartsWith(

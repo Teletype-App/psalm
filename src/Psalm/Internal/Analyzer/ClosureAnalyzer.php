@@ -17,9 +17,12 @@ use Psalm\Issue\UndefinedVariable;
 use Psalm\IssueBuffer;
 use Psalm\Storage\UnserializeMemoryUsageSuppressionTrait;
 use Psalm\Type;
+use Psalm\Type\Atomic\TClosure;
 use Psalm\Type\Atomic\TNamedObject;
 use Psalm\Type\Union;
 
+use function array_fill_keys;
+use function array_keys;
 use function in_array;
 use function is_string;
 use function preg_match;
@@ -87,7 +90,9 @@ final class ClosureAnalyzer extends FunctionLikeAnalyzer
 
         $use_context = new Context($context->self);
         $is_immediately_invoked = $statements_analyzer->node_data->isImmediatelyInvokedClosure($stmt);
-        $use_context->collect_exceptions = $context->collect_exceptions && $is_immediately_invoked;
+        // Always collect a closure's own effect summary. It is merged into the
+        // surrounding context only when the closure is actually invoked.
+        $use_context->collect_exceptions = $context->collect_exceptions;
 
         $codebase = $statements_analyzer->getCodebase();
 
@@ -208,6 +213,43 @@ final class ClosureAnalyzer extends FunctionLikeAnalyzer
 
         $byref_vars = [];
         $closure_analyzer->analyze($use_context, $statements_analyzer->node_data, $context, false, $byref_vars);
+
+        $uncaught_throws = $statements_analyzer->getUncaughtThrows($use_context);
+        if (($uncaught_throws !== [] || !$use_context->throws_analysis_complete)
+            && ($closure_type = $statements_analyzer->node_data->getType($stmt))
+        ) {
+            $atomic = $closure_type->getSingleAtomic();
+            if ($atomic instanceof TClosure) {
+                $conditions = [];
+                foreach ($uncaught_throws as $exception => $locations) {
+                    foreach ($locations as $hash => $_) {
+                        $location_conditions =
+                            $use_context->possibly_thrown_exception_conditions[$exception][$hash] ?? [[]];
+                        foreach ($location_conditions as $condition) {
+                            if ($condition === []) {
+                                $conditions[$exception] = [[]];
+                                continue 3;
+                            }
+                            if (!in_array($condition, $conditions[$exception] ?? [], true)) {
+                                $conditions[$exception][] = $condition;
+                            }
+                        }
+                    }
+                }
+
+                $statements_analyzer->node_data->setType($stmt, new Union([new TClosure(
+                    $atomic->params,
+                    $atomic->return_type,
+                    $atomic->allowed_mutations,
+                    $atomic->byref_uses,
+                    $atomic->extra_types,
+                    $atomic->from_docblock,
+                    array_fill_keys(array_keys($uncaught_throws), true),
+                    $conditions,
+                    $use_context->throws_analysis_complete,
+                )]));
+            }
+        }
 
         if ($is_immediately_invoked) {
             $context->mergeExceptions($use_context);

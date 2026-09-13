@@ -758,6 +758,9 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
                             $closure_atomic->byref_uses,
                             $closure_atomic->extra_types,
                             $closure_atomic->from_docblock,
+                            $closure_atomic->inferred_throws,
+                            $closure_atomic->inferred_throws_conditions,
+                            $closure_atomic->throws_analysis_complete,
                         ),
                     ]),
                 );
@@ -842,9 +845,15 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             && !$context->collect_mutations
             && !$this instanceof ClosureAnalyzer
         ) {
+            $inferred_throws = array_fill_keys(array_keys($uncaught_throws), true);
+            if (!$context->throws_analysis_complete) {
+                // Keep the current declaration as a conservative summary so
+                // callers do not erase it through an unresolved project edge.
+                $inferred_throws += array_fill_keys(array_keys($documented_throws), true);
+            }
             InferredThrowsBuffer::set(
                 $this->getId(),
-                array_fill_keys(array_keys($uncaught_throws), true),
+                $inferred_throws,
                 self::getThrowsConditions($context, $uncaught_throws),
             );
         }
@@ -907,6 +916,7 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         if (!$context->collect_initializations
             && !$context->collect_mutations
             && !$this instanceof ClosureAnalyzer
+            && $context->throws_analysis_complete
             && $codebase->config->check_for_throws_docblock
             && !($this->function instanceof ClassMethod && $this->function->stmts === null)
         ) {

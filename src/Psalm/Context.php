@@ -21,9 +21,11 @@ use Psalm\Internal\Scope\FinallyScope;
 use Psalm\Internal\Scope\LoopScope;
 use Psalm\Internal\Type\AssertionReconciler;
 use Psalm\Internal\Type\TypeExpander;
+use Psalm\Storage\FunctionLikeParameter;
 use Psalm\Storage\FunctionLikeStorage;
 use Psalm\Storage\Mutations;
 use Psalm\Type\Atomic\DependentType;
+use Psalm\Type\Atomic\TClosure;
 use Psalm\Type\Atomic\TEnumCase;
 use Psalm\Type\Atomic\TIntRange;
 use Psalm\Type\Atomic\TNull;
@@ -236,6 +238,12 @@ final class Context
      * Whether or not to track exceptions
      */
     public bool $collect_exceptions = false;
+
+    /**
+     * False when a project call target cannot be resolved precisely enough to
+     * prove that an existing @throws declaration is unused.
+     */
+    public bool $throws_analysis_complete = true;
 
     /**
      * A list of variables that have been referenced in conditionals
@@ -880,6 +888,8 @@ final class Context
      */
     public function mergeExceptions(Context $other_context): void
     {
+        $this->throws_analysis_complete = $this->throws_analysis_complete
+            && $other_context->throws_analysis_complete;
         foreach ($other_context->possibly_thrown_exceptions as $possibly_thrown_exception => $codelocations) {
             foreach ($codelocations as $hash => $codelocation) {
                 $this->possibly_thrown_exceptions[$possibly_thrown_exception][$hash] = $codelocation;
@@ -980,7 +990,6 @@ final class Context
                 $codelocation->raw_file_start,
             );
         }
-        $hash = $codelocation->getHash();
         // Project summaries must come from their implementation: their PHPDoc
         // may be the stale text Psalter is about to replace. External code is a
         // trust boundary, however, so its @throws declaration remains the API
@@ -996,12 +1005,37 @@ final class Context
                     ? $function_storage->throws
                     : []))
             : ($function_storage->inferred_throws ?? $function_storage->throws);
+        $this->mergeExceptionSummary(
+            $throws,
+            $function_storage->inferred_throws_conditions ?? [],
+            $function_storage->params,
+            $codelocation,
+            $args,
+            $statements_analyzer,
+        );
+    }
+
+    /**
+     * @param array<string, bool> $throws
+     * @param array<string, list<array<int, bool|int|string|null>>> $conditions
+     * @param list<FunctionLikeParameter> $params
+     * @param list<Arg> $args
+     * @psalm-external-mutation-free
+     */
+    private function mergeExceptionSummary(
+        array $throws,
+        array $conditions,
+        array $params,
+        CodeLocation $codelocation,
+        array $args,
+        ?StatementsAnalyzer $statements_analyzer,
+    ): void {
+        $hash = $codelocation->getHash();
         foreach ($throws as $possibly_thrown_exception => $_) {
             $translated_conditions = [];
-            $conditions = $function_storage->inferred_throws_conditions[$possibly_thrown_exception] ?? [[]];
-            foreach ($conditions as $condition) {
+            foreach ($conditions[$possibly_thrown_exception] ?? [[]] as $condition) {
                 $translated = $this->translateThrowsCondition(
-                    $function_storage,
+                    $params,
                     $args,
                     $condition,
                     $statements_analyzer,
@@ -1024,21 +1058,48 @@ final class Context
 
     /**
      * @param list<Arg> $args
+     * @psalm-external-mutation-free
+     */
+    public function mergeClosureExceptions(
+        TClosure $closure,
+        CodeLocation $codelocation,
+        array $args = [],
+        ?StatementsAnalyzer $statements_analyzer = null,
+    ): void {
+        $this->throws_analysis_complete = $this->throws_analysis_complete
+            && $closure->throws_analysis_complete;
+        if ($closure->inferred_throws === []) {
+            return;
+        }
+
+        $this->mergeExceptionSummary(
+            $closure->inferred_throws,
+            $closure->inferred_throws_conditions,
+            $closure->params ?? [],
+            $codelocation,
+            $args,
+            $statements_analyzer,
+        );
+    }
+
+    /**
+     * @param list<FunctionLikeParameter> $params
+     * @param list<Arg> $args
      * @param array<int, bool|int|string|null> $condition
      * @return array<int, bool|int|string|null>|null Null means this call cannot satisfy the condition.
      * @psalm-mutation-free
      */
     private function translateThrowsCondition(
-        FunctionLikeStorage $storage,
+        array $params,
         array $args,
         array $condition,
         ?StatementsAnalyzer $statements_analyzer,
     ): ?array {
         $translated = $this->getCurrentThrowsCondition();
         foreach ($condition as $offset => $required) {
-            $arg = $this->getArgumentForParameter($storage, $args, $offset);
+            $arg = $this->getArgumentForParameter($params, $args, $offset);
             $known = $arg === null
-                ? self::getDefaultConditionalValue($storage, $offset)
+                ? self::getDefaultConditionalValue($params, $offset)
                 : $this->getKnownConditionalValue($arg->value, $statements_analyzer);
             if ($known[0]) {
                 if ($known[1] !== $required) {
@@ -1064,11 +1125,12 @@ final class Context
     }
 
     /**
+     * @param list<FunctionLikeParameter> $params
      * @param list<Arg> $args
      * @psalm-mutation-free
      */
     private static function getArgumentForParameter(
-        FunctionLikeStorage $storage,
+        array $params,
         array $args,
         int $offset,
     ): ?Arg {
@@ -1076,7 +1138,7 @@ final class Context
             if ($arg->name === null && $arg_offset === $offset) {
                 return $arg;
             }
-            if ($arg->name !== null && ($storage->params[$offset]->name ?? null) === $arg->name->name) {
+            if ($arg->name !== null && ($params[$offset]->name ?? null) === $arg->name->name) {
                 return $arg;
             }
         }
@@ -1230,14 +1292,14 @@ final class Context
         return [$offset, $inverted && is_bool($required) ? !$required : $required];
     }
 
-    /** @psalm-mutation-free */
     /**
+     * @param list<FunctionLikeParameter> $params
      * @return array{bool, bool|int|string|null}
      * @psalm-mutation-free
      */
-    private static function getDefaultConditionalValue(FunctionLikeStorage $storage, int $offset): array
+    private static function getDefaultConditionalValue(array $params, int $offset): array
     {
-        $default = $storage->params[$offset]->default_type ?? null;
+        $default = $params[$offset]->default_type ?? null;
         if (!$default instanceof Union) {
             return [false, null];
         }

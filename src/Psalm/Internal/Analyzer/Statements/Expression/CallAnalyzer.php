@@ -331,6 +331,47 @@ abstract class CallAnalyzer
             if (!$context->isSuppressingExceptions($statements_analyzer)) {
                 $throws_storages[] = $method_storage;
 
+                $project_polymorphic_call = ($class_storage->is_interface || $class_storage->abstract)
+                    && $class_storage->location !== null
+                    && $codebase->config->isInProjectDirs($class_storage->location->file_path);
+                if ($project_polymorphic_call) {
+                    $found_concrete_implementation = false;
+                    $implementation_method_ids = [];
+                    foreach ($class_storage->dependent_classlikes as $implementation_name => $_) {
+                        $implementation_storage = $codebase->classlike_storage_provider->get($implementation_name);
+                        if ($implementation_storage->is_interface
+                            || $implementation_storage->is_trait
+                            || $implementation_storage->abstract
+                            || !isset($implementation_storage->declaring_method_ids[$method_name])
+                            || ($class_storage->is_interface
+                                && !isset($implementation_storage->class_implements[$fq_class_name]))
+                            || ($class_storage->abstract
+                                && strtolower((string) $implementation_storage->parent_class) !== $fq_class_name
+                                && !isset($implementation_storage->parent_classes[$fq_class_name]))
+                        ) {
+                            continue;
+                        }
+
+                        $implementation_method_id = $implementation_storage->declaring_method_ids[$method_name];
+                        if ($implementation_method_id->fq_class_name === $declaring_method_id->fq_class_name) {
+                            continue;
+                        }
+
+                        $found_concrete_implementation = true;
+                        $implementation_method_key = strtolower((string) $implementation_method_id);
+                        if (isset($implementation_method_ids[$implementation_method_key])) {
+                            continue;
+                        }
+                        $implementation_method_ids[$implementation_method_key] = true;
+                        $throws_storages[] = $codebase->methods->getStorage($implementation_method_id);
+                    }
+                    if (!$found_concrete_implementation) {
+                        // A partial project, plugin/DI boundary, or dynamically
+                        // loaded implementation makes destructive narrowing unsafe.
+                        $context->throws_analysis_complete = false;
+                    }
+                }
+
                 if ($declaring_class_storage->is_trait) {
                     // A trait body is analyzed in its using class, never on its own.
                     $appearing_id = $codebase->methods->getAppearingMethodId($method_id);

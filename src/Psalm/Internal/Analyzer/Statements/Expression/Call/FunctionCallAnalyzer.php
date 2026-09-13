@@ -707,6 +707,16 @@ final class FunctionCallAnalyzer extends CallAnalyzer
 
                     if ($var_type_part instanceof TClosure) {
                         $function_call_info->byref_uses += $var_type_part->byref_uses;
+                        if ($function_name instanceof PhpParser\Node\Expr\Variable
+                            && !$context->isSuppressingExceptions($statements_analyzer)
+                        ) {
+                            $context->mergeClosureExceptions(
+                                $var_type_part,
+                                new CodeLocation($statements_analyzer->getSource(), $stmt),
+                                $stmt->getArgs(),
+                                $statements_analyzer,
+                            );
+                        }
                     }
 
                     $function_call_info->function_exists = true;
