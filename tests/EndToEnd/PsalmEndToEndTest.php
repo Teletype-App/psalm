@@ -700,7 +700,7 @@ final class PsalmEndToEndTest extends TestCase
         $this->assertSame(1, substr_count($contents, '@throws RuntimeException'));
     }
 
-    public function testPsalterPropagatesConcreteAndDynamicThrowsEffects(): void
+    public function testPsalterPropagatesConcreteThrowsAndDropsUnresolvedFallbacks(): void
     {
         $this->runPsalmInit();
         $psalmXml = file_get_contents(self::$tmpDir . '/psalm.xml');
@@ -853,8 +853,8 @@ final class PsalmEndToEndTest extends TestCase
             $contents,
         );
         $this->assertSame(3, substr_count($contents, '@throws UnexpectedValueException'), $contents);
-        $this->assertSame(2, substr_count($contents, '@throws LengthException'), $contents);
-        $this->assertSame(1, substr_count($contents, '@throws RangeException'), $contents);
+        $this->assertSame(0, substr_count($contents, '@throws LengthException'), $contents);
+        $this->assertSame(0, substr_count($contents, '@throws RangeException'), $contents);
     }
 
     public function testInit(): void

@@ -846,11 +846,6 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
             && !$this instanceof ClosureAnalyzer
         ) {
             $inferred_throws = array_fill_keys(array_keys($uncaught_throws), true);
-            if (!$context->throws_analysis_complete) {
-                // Keep the current declaration as a conservative summary so
-                // callers do not erase it through an unresolved project edge.
-                $inferred_throws += array_fill_keys(array_keys($documented_throws), true);
-            }
             InferredThrowsBuffer::set(
                 $this->getId(),
                 $inferred_throws,
@@ -919,7 +914,6 @@ abstract class FunctionLikeAnalyzer extends SourceAnalyzer
         if (!$context->collect_initializations
             && !$context->collect_mutations
             && !$this instanceof ClosureAnalyzer
-            && $context->throws_analysis_complete
             && $codebase->config->check_for_throws_docblock
             && !($this->function instanceof ClassMethod && $this->function->stmts === null)
         ) {

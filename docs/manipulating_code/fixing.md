@@ -50,6 +50,8 @@ Paths and `--changed` restrict which files and declarations are edited. Psalm al
 
 `MissingThrowsDocblock` adds each inferred exception type even when an existing `@throws Throwable` already covers it. Combining the three issues also removes unused or overly broad annotations based on the analyzed bodies.
 
+Existing `@throws` annotations are not used as a fallback when a dynamic or polymorphic target cannot be resolved. If `UnusedThrowsDocblock` or `OverlyBroadThrowsDocblock` is selected, an annotation supported only by such an unresolved edge is removed; only exceptions inferred from analyzed bodies or a statically resolved external/provider contract are retained.
+
 Keep the default cache enabled for repeated runs. Scanned storage is validated against file contents, and inferred exception summaries are rebuilt on each run, so replacing or removing a throw in a dependency invalidates the result even when its timestamp is unchanged. One analysis and scan process can reduce startup overhead for small selections; larger selections may benefit from more processes.
 
 To apply fixes and report remaining issues in the same invocation, use `--report-changed`:

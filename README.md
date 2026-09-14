@@ -61,7 +61,7 @@ For memory-constrained large projects, start with one analysis and scan worker a
 
 ## Analysis boundaries
 
-- Runtime-only targets such as arbitrary callable variables, dynamic method names, service-locator configuration, behaviors, and some deferred closures cannot always be resolved statically. The fork does not guess every possible target.
+- Runtime-only targets such as arbitrary callable variables, dynamic method names, service-locator configuration, behaviors, and some deferred closures cannot always be resolved statically. The fork does not guess every possible target and does not retain an existing `@throws` annotation as a fallback for an unresolved edge.
 - Vendor code is normally represented by its declared contracts. An undocumented runtime exception in a dependency is invisible unless a focused provider or stub supplies that contract.
 - Yii support is convention-based and deliberately limited to targets that can be resolved without broad vendor-body analysis.
 - The initial inferred-throws calculation can be expensive. Interrupted analyses do not persist partially converged summaries.
