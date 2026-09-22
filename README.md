@@ -31,7 +31,7 @@ composer config repositories.teletype-psalm vcs https://github.com/Teletype-App/
 composer require --dev vimeo/psalm:dev-teletype
 ```
 
-Commit `composer.lock`: it pins the exact fork revision even when `dev-teletype` advances. Fork releases use tags such as `7.0.0-p46`; prefer a suitable fork tag when one includes all features you need.
+Commit `composer.lock`: it pins the exact fork revision even when `dev-teletype` advances. Fork releases use tags such as `7.0.0-p48`; prefer a suitable fork tag when one includes all features you need.
 
 Installing `vimeo/psalm` from Packagist without the VCS repository installs upstream Psalm. Upstream release archives, PHAR downloads, Docker images, and self-update instructions likewise do not install this fork.
 
@@ -79,7 +79,7 @@ composer install
 composer tests
 ```
 
-Review fork-specific exception inference, cache, Psalter, and Yii tests after every upstream merge. Do not replace the maintained branch with upstream or assume that an upstream release contains these changes.
+Review fork-specific exception inference, cache, Psalter, and Yii tests after every upstream merge. Do not replace the maintained branch with upstream or assume that an upstream release contains these changes. See [FORK_SYNC.md](FORK_SYNC.md) for the upstream synchronization policy, verification steps, and conflict handling.
 
 The general test workflow runs on pushes and pull requests. Some upstream-derived artifact workflows only target `master`, `6.x`, or release events, so a push to `teletype` does not by itself publish every upstream artifact.
 
