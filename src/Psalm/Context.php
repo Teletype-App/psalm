@@ -55,6 +55,9 @@ use function strtolower;
 
 use const JSON_THROW_ON_ERROR;
 
+/**
+ * @api
+ */
 final class Context
 {
     private const MAX_THROWS_CONDITIONS = 64;
@@ -329,6 +332,9 @@ final class Context
 
     public bool $strict_types = false;
 
+    /**
+     * @var lowercase-string|null
+     */
     public ?string $calling_function_id = null;
 
     /**

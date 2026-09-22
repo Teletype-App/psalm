@@ -7,6 +7,10 @@ namespace Psalm\Plugin\EventHandler;
 use Psalm\Plugin\EventHandler\Event\MethodThrowsProviderEvent;
 use Psalm\Plugin\EventHandler\MethodThrowsProviderResult;
 
+/**
+ * @api
+ * @psalm-mutable
+ */
 interface MethodThrowsProviderInterface
 {
     /**

@@ -25,6 +25,9 @@ use Psalm\Plugin\RegistrationInterface;
 use function class_exists;
 use function is_subclass_of;
 
+/**
+ * @api
+ */
 final class PluginRegistrationSocket implements RegistrationInterface
 {
     /**

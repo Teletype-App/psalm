@@ -67,7 +67,6 @@ use function array_map;
 use function array_values;
 use function count;
 use function in_array;
-use function md5;
 use function preg_match;
 use function reset;
 use function strtolower;
@@ -104,22 +103,22 @@ final class NewAnalyzer extends CallAnalyzer
             if (!in_array(strtolower($stmt->class->getFirst()), ['self', 'static', 'parent'], true)) {
                 $aliases = $statements_analyzer->getAliases();
 
-                if ($context->calling_method_id
-                    && !$stmt->class instanceof PhpParser\Node\Name\FullyQualified
-                ) {
-                    $codebase->file_reference_provider->addMethodReferenceToClassMember(
-                        $context->calling_method_id,
-                        'use:' . $stmt->class->getFirst() . ':' . md5($statements_analyzer->getFilePath()),
-                        false,
-                    );
-                }
-
                 $fq_class_name = ClassLikeAnalyzer::getFQCLNFromNameObject(
                     $stmt->class,
                     $aliases,
                 );
 
                 $fq_class_name = $codebase->classlikes->getUnAliasedName($fq_class_name);
+
+                if ($context->calling_method_id
+                    && !$stmt->class instanceof PhpParser\Node\Name\FullyQualified
+                ) {
+                    $codebase->addReferenceToUseAlias(
+                        $stmt->class->getFirst(),
+                        $statements_analyzer->getFilePath(),
+                        $context,
+                    );
+                }
             } elseif ($context->self !== null) {
                 switch ($stmt->class->getFirst()) {
                     case 'self':
@@ -289,7 +288,7 @@ final class NewAnalyzer extends CallAnalyzer
                     $context,
                 );
 
-                if ($codebase->classlikes->enumExists($fq_class_name)) {
+                if ($codebase->classlikes->enumExists($fq_class_name, null, $context)) {
                     IssueBuffer::maybeAdd(new UndefinedClass(
                         'Enums cannot be instantiated',
                         new CodeLocation($statements_analyzer, $stmt),
@@ -471,6 +470,8 @@ final class NewAnalyzer extends CallAnalyzer
                         null,
                         false,
                         $method_storage,
+                        // the constructor only mutates the new object
+                        true,
                     );
                 }
 
@@ -762,7 +763,6 @@ final class NewAnalyzer extends CallAnalyzer
                 $method_source = DataFlowNode::getForCallableReturn(
                     'builtin',
                     $fq_class_name . '::__construct',
-                    $storage->location,
                     $storage->isExternalMutationFree() ? $code_location : null,
                 );
             } elseif ($storage->isExternalMutationFree() || $method_storage->specialize_call) {
@@ -830,7 +830,6 @@ final class NewAnalyzer extends CallAnalyzer
                     'dynamic-instantiation',
                     'variable-call',
                     0,
-                    $arg_location,
                     $arg_location,
                     TaintKind::INPUT_CALLABLE,
                 );
@@ -1138,10 +1137,30 @@ final class NewAnalyzer extends CallAnalyzer
     }
 
     /**
-     * Returns the set of class templates with no public mutation channel: a template
-     * named in a public non-constructor method parameter or a public non-readonly
-     * property type is one that later code can still constrain, anything else can
-     * only have been fixed at the construction site.
+     * Returns the set of class templates with no public channel that can constrain
+     * them: a template named anywhere in a public non-constructor method parameter
+     * or a public non-readonly property type is one that later code can still
+     * constrain, anything else can only have been fixed at the construction site and
+     * so is pinned eagerly rather than minted as a type variable.
+     *
+     * Any appearance in such a parameter constrains the variable, whichever way the
+     * position points, so `getTemplateTypes()` finding it in *any* nested position is
+     * correct — it is not an over-count. A value position (`set(T $item)`) records a
+     * lower bound that widens the type argument; a callable-parameter position
+     * (`each(callable(T): mixed)`) records an upper bound (`T <: the callback's
+     * parameter`). The upper bound is a real constraint, not a no-op: on an otherwise
+     * unbound construction it is what resolves the variable (to the callback's
+     * parameter type rather than `mixed`, matching Hack — see the
+     * `unboundTemplateSolvesToClosureParam` test), and it conflicts with a lower
+     * bound recorded elsewhere when the two cannot hold together (see
+     * `constructorBoundThenClosureParamConflict`). Pinning such a template eagerly
+     * instead would lose both behaviours, so every appearance must mint a variable.
+     *
+     * The set is only ever over-approximated per construction site: the channel may
+     * never be exercised (the method is not called), in which case the variable
+     * simply reconciles to its construction-site bound — which is why a variable that
+     * survives into an expression must be resolved through its bounds by consumers
+     * (array access, property reads, method returns) rather than assumed pinned.
      *
      * @return array<string, true>
      * @psalm-mutation-free

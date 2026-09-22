@@ -13,6 +13,7 @@ use Psalm\StatementsSource;
  * Allows opt-in plugins to provide a return type when the receiver itself is mixed.
  *
  * @psalm-immutable
+ * @api
  */
 final class MixedMethodReturnTypeProviderEvent
 {

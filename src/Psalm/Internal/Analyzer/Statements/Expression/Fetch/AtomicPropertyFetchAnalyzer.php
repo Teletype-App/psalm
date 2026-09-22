@@ -185,7 +185,7 @@ final class AtomicPropertyFetchAnalyzer
         $codebase = $statements_analyzer->getCodebase();
 
         if (!$codebase->classExists($lhs_type_part->value, null, $context)
-            && !$codebase->classlikes->enumExists($lhs_type_part->value)
+            && !$codebase->classlikes->enumExists($lhs_type_part->value, null, $context)
         ) {
             $interface_exists = false;
 
@@ -253,7 +253,7 @@ final class AtomicPropertyFetchAnalyzer
             return;
         }
 
-        $naive_property_exists = $codebase->properties->propertyExists(
+        $naive_property_exists = $codebase->propertyExists(
             $property_id,
             !$in_assignment,
             $statements_analyzer,
@@ -287,7 +287,7 @@ final class AtomicPropertyFetchAnalyzer
                     }
 
                     if ($new_class_storage
-                        && ($codebase->properties->propertyExists(
+                        && ($codebase->propertyExists(
                             $new_property_id,
                             !$in_assignment,
                             $statements_analyzer,
@@ -376,7 +376,7 @@ final class AtomicPropertyFetchAnalyzer
             && $fq_class_name !== $context->self
             && $context->self
             && $codebase->classlikes->classExtends($fq_class_name, $context->self)
-            && $codebase->properties->propertyExists(
+            && $codebase->propertyExists(
                 $context->self . '::$' . $prop_name,
                 true,
                 $statements_analyzer,

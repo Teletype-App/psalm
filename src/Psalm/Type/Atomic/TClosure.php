@@ -17,6 +17,7 @@ use Psalm\Type\Union;
  * Represents a closure where we know the return type and params
  *
  * @psalm-immutable
+ * @api
  */
 final class TClosure extends TNamedObject
 {
@@ -38,6 +39,10 @@ final class TClosure extends TNamedObject
      * @param array<string, TNamedObject|TTemplateParam|TIterable|TObjectWithProperties|TCallableObject> $extra_types
      * @param array<string, true> $inferred_throws
      * @param array<string, list<array<int, bool|int|string|null>>> $inferred_throws_conditions
+     * @param ?non-empty-lowercase-string $callable_id The id of the underlying function/method, when
+     *                                        known (e.g. for a first-class callable `foo(...)`). Metadata
+     *                                        only - it does not affect the structural type - and is
+     *                                        used to re-dispatch taint sinks/sources on invocation.
      */
     public function __construct(
         ?array $params = null,
@@ -49,6 +54,7 @@ final class TClosure extends TNamedObject
         public array $inferred_throws = [],
         public array $inferred_throws_conditions = [],
         public bool $throws_analysis_complete = true,
+        public ?string $callable_id = null,
     ) {
         $this->params = $params;
         $this->return_type = $return_type;
@@ -94,6 +100,7 @@ final class TClosure extends TNamedObject
             $this->inferred_throws,
             $this->inferred_throws_conditions,
             $this->throws_analysis_complete,
+            $this->callable_id,
         );
     }
 
@@ -150,6 +157,7 @@ final class TClosure extends TNamedObject
             $this->inferred_throws,
             $this->inferred_throws_conditions,
             $this->throws_analysis_complete,
+            $this->callable_id,
         );
     }
 

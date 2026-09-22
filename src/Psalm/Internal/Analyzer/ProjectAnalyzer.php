@@ -238,6 +238,16 @@ final class ProjectAnalyzer
 
         $this->codebase = $codebase;
 
+        // Restore the custom taint name->bit mapping from a previous run before anything is scanned, so
+        // that the taint bits baked into the reused storage cache keep matching their taint names.
+        if ($this->project_cache_provider) {
+            $custom_taints = $this->project_cache_provider->loadCustomTaints();
+
+            if ($custom_taints !== null) {
+                $this->codebase->importCustomTaints($custom_taints);
+            }
+        }
+
         $this->config->processPluginFileExtensions($this);
 
         if ($this->config::INIT_PROJECT_FILES_NOW) {
@@ -666,13 +676,13 @@ final class ProjectAnalyzer
                     );
                 }
 
-                if (!$this->codebase->properties->propertyExists($source, true)) {
+                if (!$this->codebase->propertyExists($source, true)) {
                     throw new RefactorException(
                         'Property ' . $source . ' does not exist',
                     );
                 }
 
-                if ($this->codebase->properties->propertyExists($destination, true)) {
+                if ($this->codebase->propertyExists($destination, true)) {
                     throw new RefactorException(
                         'Destination property ' . $destination . ' already exists',
                     );
@@ -977,7 +987,7 @@ final class ProjectAnalyzer
                     ) as $file_path) {
                         $this->project_files[$file_path] = $file_path;
                     }
-                } elseif (is_file($file_path)) {
+                } elseif (is_file($file_path) || $this->file_provider->fileExists($file_path)) {
                     $this->project_files[$file_path] = $file_path;
                 }
             }
@@ -997,7 +1007,7 @@ final class ProjectAnalyzer
 
             if (is_dir($path)) {
                 $this->checkDirWithConfig($path, $this->config, true);
-            } elseif (is_file($path)) {
+            } elseif (is_file($path) || $this->file_provider->fileExists($path)) {
                 $this->check_paths_files[] = $path;
                 $this->codebase->addFilesToAnalyze([$path => $path]);
                 $this->config->hide_external_errors = $this->config->isInProjectDirs($path);
@@ -1045,6 +1055,19 @@ final class ProjectAnalyzer
 
         if ($this->project_cache_provider) {
             $this->project_cache_provider->processSuccessfulRun($start_time, $psalm_version);
+        }
+    }
+
+    /**
+     * Persist the custom taint mapping (possibly extended with taints registered this run) so the next run
+     * reusing this cache resolves the same taint names to the same bits. Unlike {@see self::finish()} this
+     * runs after every analysis (including individual files/folders and diff runs), because those runs also
+     * write taint bits into the file/classlike storage cache.
+     */
+    public function persistCustomTaints(): void
+    {
+        if ($this->project_cache_provider) {
+            $this->project_cache_provider->saveCustomTaints($this->codebase->exportCustomTaints());
         }
     }
 

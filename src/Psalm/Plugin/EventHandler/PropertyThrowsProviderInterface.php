@@ -6,6 +6,10 @@ namespace Psalm\Plugin\EventHandler;
 
 use Psalm\Plugin\EventHandler\Event\PropertyThrowsProviderEvent;
 
+/**
+ * @api
+ * @psalm-mutable
+ */
 interface PropertyThrowsProviderInterface
 {
     /**
